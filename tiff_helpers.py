@@ -97,3 +97,19 @@ def norm_img(img):
     """
 
     return (img - img.min())/(img.max() - img.min())
+
+
+def mean_center_img(img):
+    """
+    Makes each image in a stack have zero mean and unit std
+    :param img: 3d array of images
+    :return: normalized image array
+    """
+
+    for page in range(img.shape[2]):
+        temp_page = img[:, :, page]
+        img[:, :, page] = (temp_page - temp_page.mean())/temp_page.std()
+
+    return img
+
+
