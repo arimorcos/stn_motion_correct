@@ -13,7 +13,7 @@ class stn:
     Class to instantiate a spatial transformer network
     """
 
-    def __init__(self, batch_size=32, alpha=0.001, max_norm=5, log_dir=None):
+    def __init__(self, batch_size=32, alpha=0.001, max_norm=5, log_dir=None, save_every=10):
 
         # Initialize parameters
         self.batch_size = batch_size
@@ -21,6 +21,7 @@ class stn:
         self.max_norm = max_norm
         self.log_dir = log_dir
         self.curr_epoch = 0
+        self.save_every = save_every
 
         # Create the graph
         self.create_network_graph(batch_size=self.batch_size)
@@ -64,13 +65,16 @@ class stn:
     def train_adam(self, input_batch, ref_imgs):
 
         # Train network
-        self.train_adam_helper(input_batch, ref_imgs)
+        cost = self.train_adam_helper(input_batch, ref_imgs)
 
         # Save parameters
-        self.save_parameters()
+        if self.curr_epoch % self.save_every == 0:
+            self.save_parameters()
 
         # Increment current epoch
         self.curr_epoch += 1
+
+        return cost
 
     def create_inputs(self):
         """
