@@ -2,6 +2,10 @@ import numpy as np
 import theano
 import lasagne
 import theano.tensor as T
+import re
+import os
+import cPickle
+import warnings
 
 
 class stn:
@@ -9,12 +13,14 @@ class stn:
     Class to instantiate a spatial transformer network
     """
 
-    def __init__(self, batch_size=32, alpha=0.001, max_norm=5):
+    def __init__(self, batch_size=32, alpha=0.001, max_norm=5, log_dir=None):
 
         # Initialize parameters
         self.batch_size = batch_size
         self.alpha = alpha
         self.max_norm = max_norm
+        self.log_dir = log_dir
+        self.curr_epoch = 0
 
         # Create the graph
         self.create_network_graph(batch_size=self.batch_size)
@@ -51,9 +57,20 @@ class stn:
                                        learning_rate=self.alpha)
 
         # Create train function
-        self.train_adam = theano.function([self.input_batch, self.ref_imgs],
+        self.train_adam_helper = theano.function([self.input_batch, self.ref_imgs],
                                           self.cost,
                                           updates=updates)
+
+    def train_adam(self, input_batch, ref_imgs):
+
+        # Train network
+        self.train_adam_helper(input_batch, ref_imgs)
+
+        # Save parameters
+        self.save_parameters()
+
+        # Increment current epoch
+        self.curr_epoch += 1
 
     def create_inputs(self):
         """
@@ -155,3 +172,107 @@ class stn:
 
         # Return
         self.transformer_graph = transformer
+
+    def get_param_values(self):
+        """
+        Returns list of all the parameter values
+        :return: List of numpy arrays containing all parameter values
+        """
+
+        return lasagne.layers.get_all_param_values(self.transformer_graph)
+
+    def save_parameters(self):
+        """def set_parameters(self):
+        Saves the parameters to a new file in the current log folder
+        """
+
+        if self.log_dir is None:
+            raise AttributeError("No log folder specified")
+
+        # Create log file
+        log_file = os.path.join(self.log_dir, "Epoch_{:04d}_weights.pkl".format(self.curr_epoch))
+
+        with open(log_file, 'wb') as f:
+            param_values = self.get_param_values()
+            cPickle.dump(param_values, f, protocol=cPickle.HIGHEST_PROTOCOL)
+
+    def set_parameters(self, param_file=None, epoch=None):
+        """
+        Loads parameters from the specified file and sets them
+        :param param_file: file to load parameters from. If specified, loads a specific file.
+        :param epoch: Epoch to load from. If specified, loads parameters from a given epoch in the current log
+        folder. If both param_file and epoch provided, param_file will be used.
+        :return: None
+        """
+
+        # Get load file
+        if param_file:
+            load_file = param_file
+            if epoch:
+                warnings.warn('Both param_file and epoch provided. Using param_file...')
+            if not os.path.isfile(load_file):
+                raise IOError('File {} not found. No parameters have been set'.format(load_file))
+        elif epoch is not None:
+            load_file = os.path.join(self.log_dir, 'Epoch_{:04d}_weights.pkl'.format(epoch))
+            if not os.path.isfile(load_file):
+                raise IOError('File corresponding to epoch {}: \"Epoch_{:04d}_weights.pkl\" not found.'.format(epoch,
+                                                                                                           epoch))
+        else:
+            raise ValueError('Must provide param_file or epoch. No parameters have been set.')
+
+        # load parameters
+        with open(load_file, 'rb') as f:
+            loaded_params = cPickle.load(f)
+            lasagne.layers.set_all_param_values(self.transformer_graph, loaded_params)
+
+    def set_log_dir(self, log_dir):
+        """
+        Sets the current log directory
+        :param log_dir: path to log directory
+        :return: None
+        """
+        self.log_dir = log_dir
+
+        if os.path.isdir(log_dir):
+            # Get file list
+            file_list = os.listdir(log_dir)
+
+            # Subset to epoch files
+            epoch_string = 'Epoch_\d{4}_weights'
+            epoch_files = [item for item in file_list if re.search(epoch_string, item)]
+
+            # Get most up to date epoch and ask if files are present
+            if epoch_files:
+
+                # Get list of epoch strings
+                epoch_nums = []
+                for x in epoch_files:
+                    match = re.search('((?<=Epoch\_)(\d{4})(?=\_weights))', x)
+                    if match:
+                        epoch_nums.append(int(match.group()))
+
+                # get maximum epoch
+                max_epoch = max(epoch_nums)
+
+                # ask user
+                answer = raw_input("Epoch files already exist. Maximum epoch is {}. Reset y/n?".format(max_epoch))
+                if answer == 'y':
+                    # Delete files
+                    [os.remove(os.path.join(log_dir, x)) for x in epoch_files]
+                elif answer == 'n':
+                    # Set current epoch to max_epoch + 1
+                    self.curr_epoch = max_epoch + 1
+                else:
+                    raise BaseException("Cannot parse answer.")
+
+        else:
+            os.mkdir(log_dir)
+
+    def get_log_dir(self):
+        """
+        :return: Path to current log directory
+        """
+        if self.log_dir:
+            return self.log_dir
+        else:
+            print "No log directory set."
