@@ -9,10 +9,12 @@ class stn:
     Class to instantiate a spatial transformer network
     """
 
-    def __init__(self, batch_size=32):
+    def __init__(self, batch_size=32, alpha=0.001, max_norm=5):
 
         # Initialize parameters
         self.batch_size = batch_size
+        self.alpha = alpha
+        self.max_norm = max_norm
 
         # Create the graph
         self.create_network_graph(batch_size=self.batch_size)
@@ -24,7 +26,39 @@ class stn:
         self.initialize_process()
         self.initialize_cost()
 
+        # Initialize adam
+        self.initialize_adam()
+
+    def initialize_adam(self):
+        """
+        Initializes the adam training function
+        """
+
+        # Get the parameters to train
+        self.params_to_train = lasagne.layers.get_all_params(self.transformer_graph,
+                                                             trainable=True)
+
+        # Get gradients
+        self.all_gradients = T.grad(self.cost, self.params_to_train)
+
+        # Add gradient normalization
+        updates = lasagne.updates.total_norm_constraint(self.all_gradients,
+                                                        max_norm=self.max_norm)
+
+        # Create adam function
+        updates = lasagne.updates.adam(updates,
+                                       self.params_to_train,
+                                       learning_rate=self.alpha)
+
+        # Create train function
+        self.train_adam = theano.function([self.input_batch, self.ref_imgs],
+                                          self.cost,
+                                          updates=updates)
+
     def create_inputs(self):
+        """
+        Initializes the tensors for the input images and reference images
+        """
         # Create input tensor
         self.input_batch = T.tensor4('input_batch', dtype=theano.config.floatX)
 
@@ -40,10 +74,10 @@ class stn:
         predictions = lasagne.layers.get_output(self.transformer_graph, self.input_batch)
 
         # add in the cost
-        cost = lasagne.objectives.squared_error(predictions, self.ref_imgs).mean()
+        self.cost = lasagne.objectives.squared_error(predictions, self.ref_imgs).mean()
 
         # create function
-        self.get_cost = theano.function([self.input_batch, self.ref_imgs], cost)
+        self.get_cost = theano.function([self.input_batch, self.ref_imgs], self.cost)
 
     def initialize_process(self):
         """
