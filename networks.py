@@ -14,7 +14,7 @@ class stn:
     Class to instantiate a spatial transformer network
     """
 
-    def __init__(self, batch_size=32, alpha=0.001, max_norm=5, log_dir=None, save_every=10):
+    def __init__(self, batch_size=32, alpha=0.0005, max_norm=5., log_dir=None, save_every=10):
 
         # Initialize parameters
         self.batch_size = batch_size
@@ -51,7 +51,7 @@ class stn:
 
         # Add gradient normalization
         updates = lasagne.updates.total_norm_constraint(self.all_gradients,
-                                                        max_norm=self.max_norm)
+                                                              max_norm=self.max_norm)
 
         # Create adam function
         updates = lasagne.updates.adam(updates,
@@ -74,7 +74,7 @@ class stn:
 
         # Add to log
         self.logger.info(
-            "Epoch: {} | Cost: {:.9f}".format(self.curr_epoch, cost.tolist())
+            "Batch: {:06d} | Cost: {:.9f}".format(self.curr_epoch, cost.tolist())
         )
 
         # Increment current epoch
