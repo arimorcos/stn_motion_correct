@@ -12,7 +12,7 @@ class image_manager:
     """
 
     def __init__(self, folder_list=None, batch_size=16,
-                 num_files_per_batch=4, num_batches_per_file_group=400,
+                 num_files_per_batch=4, num_batches_per_file_group=100,
                  image_dim=(512, 512)):
         """
         Initializes manager class

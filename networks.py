@@ -7,6 +7,7 @@ import os
 import cPickle
 import warnings
 import logging
+from batch_norm import batch_norm
 
 
 class stn:
@@ -117,10 +118,11 @@ class stn:
         # Create theano function
         self.process = theano.function([self.input_batch], output)
 
-    def create_network_graph(self, batch_size=32):
+    def create_network_graph(self, batch_size=32, should_batch_norm=True):
         """
         Builds a spatial transformer network
-        :param batch_size:
+        :param should_batch_norm: Whether or not to use batch normalization
+        :param batch_size: batch_size for optimization
         :return:
         """
 
@@ -130,37 +132,59 @@ class stn:
         # Input layer with size (batch_size, num_channels, height, width).
         # In our case, each channel will represent the image to change and the reference image.
         input_layer = lasagne.layers.InputLayer((batch_size, 2, 512, 512))
+        if should_batch_norm:
+            input_layer = batch_norm(input_layer)
 
         # convolutions
         conv_layer_1 = lasagne.layers.Conv2DLayer(input_layer, num_filters=32, filter_size=(3, 3),
                                                   stride=1, pad='full', name='conv_1', W=W_ini)
+        if should_batch_norm:
+            conv_layer_1 = batch_norm(conv_layer_1)
         conv_layer_2 = lasagne.layers.Conv2DLayer(conv_layer_1, num_filters=32, filter_size=(3, 3),
                                                   stride=1, pad='full', name='conv_2', W=W_ini)
+        if should_batch_norm:
+            conv_layer_2 = batch_norm(conv_layer_2)
 
         # pool
         pool_layer_1 = lasagne.layers.MaxPool2DLayer(conv_layer_2, pool_size=(2, 2), name='pool_1')
+        if should_batch_norm:
+            pool_layer_1 = batch_norm(pool_layer_1)
 
         # more convolutions
         conv_layer_3 = lasagne.layers.Conv2DLayer(pool_layer_1, num_filters=64, filter_size=(3, 3),
                                                   stride=1, pad='full', name='conv_3', W=W_ini)
+        if should_batch_norm:
+            conv_layer_3 = batch_norm(conv_layer_3)
         conv_layer_4 = lasagne.layers.Conv2DLayer(conv_layer_3, num_filters=64, filter_size=(3, 3),
                                                   stride=1, pad='full', name='conv_4', W=W_ini)
+        if should_batch_norm:
+            conv_layer_4 = batch_norm(conv_layer_4)
 
         # pool
         pool_layer_2 = lasagne.layers.MaxPool2DLayer(conv_layer_4, pool_size=(2, 2), name='pool_2')
+        if should_batch_norm:
+            pool_layer_2 = batch_norm(pool_layer_2)
 
         # more convolutions
         conv_layer_5 = lasagne.layers.Conv2DLayer(pool_layer_2, num_filters=128, filter_size=(3, 3),
                                                   stride=1, pad='full', name='conv_5', W=W_ini)
+        if should_batch_norm:
+            conv_layer_5 = batch_norm(conv_layer_5)
         conv_layer_6 = lasagne.layers.Conv2DLayer(conv_layer_5, num_filters=128, filter_size=(3, 3),
                                                   stride=1, pad='full', name='conv_6', W=W_ini)
+        if should_batch_norm:
+            conv_layer_6 = batch_norm(conv_layer_6)
 
         # pool
         pool_layer_3 = lasagne.layers.MaxPool2DLayer(conv_layer_6, pool_size=(2, 2), name='pool_3')
+        if should_batch_norm:
+            pool_layer_3 = batch_norm(pool_layer_3)
 
         # Dense layers
         dense_layer_1 = lasagne.layers.DenseLayer(pool_layer_3, num_units=128, W=W_ini,
                                                   name='dense_1')
+        if should_batch_norm:
+            dense_layer_1 = batch_norm(dense_layer_1)
 
         # Initialize affine transform to identity
         b = np.zeros((2, 3), dtype=theano.config.floatX)
