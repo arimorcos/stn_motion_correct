@@ -30,6 +30,7 @@ class image_manager:
         self.image_dim = image_dim
         self.curr_batch = 0
         self.curr_data = None
+        self.curr_ref = None
 
         # Set folder list
         if folder_list is None:
@@ -124,7 +125,9 @@ class image_manager:
 
             # Loop through and load
             for load_file in load_list:
-                tiff_data.append(tiff_helpers.read_tiff(load_file, np.arange(1, 2000, 2)))
+                tiff_data.append(
+                                tiff_helpers.read_tiff(load_file, np.arange(1, 2000, 2))
+                                )
 
             # Store
             self.tiff_data = tiff_data
@@ -147,11 +150,15 @@ class image_manager:
 
             # Crop out, permute to appropriate indices and add
             to_add = self.tiff_data[which_file][:, :, image_indices]
+            to_add = tiff_helpers.mean_center_img(to_add)
             to_add = np.transpose(to_add, axes=(3, 2, 0, 1))
             new_data[batch_index, :, :, :] = to_add
 
         # Increment
         self.curr_batch += 1
+
+        # Create current reference image
+        self.curr_ref = new_data[:, 1, :, :]
 
         # Store
         self.curr_data = new_data
@@ -165,4 +172,4 @@ class image_manager:
         if self.curr_data is None:
             raise BaseException("Must advance schedule first")
 
-        return self.curr_data
+        return self.curr_data, self.curr_ref
