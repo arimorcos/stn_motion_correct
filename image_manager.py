@@ -156,7 +156,6 @@ class image_manager:
         # Store
         self.curr_data = new_data
 
-
     def offer_data(self):
         """
         Returns the current batch

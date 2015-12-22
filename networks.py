@@ -6,6 +6,7 @@ import re
 import os
 import cPickle
 import warnings
+import logging
 
 
 class stn:
@@ -70,6 +71,11 @@ class stn:
         # Save parameters
         if self.curr_epoch % self.save_every == 0:
             self.save_parameters()
+
+        # Add to log
+        self.logger.info(
+            "Epoch: {} | Cost: {:.9f}".format(self.curr_epoch, cost.tolist())
+        )
 
         # Increment current epoch
         self.curr_epoch += 1
@@ -272,6 +278,9 @@ class stn:
         else:
             os.mkdir(log_dir)
 
+        # Create log file
+        self.create_log_file()
+
     def get_log_dir(self):
         """
         :return: Path to current log directory
@@ -280,3 +289,34 @@ class stn:
             return self.log_dir
         else:
             print "No log directory set."
+
+    def create_log_file(self):
+        """
+        Creates a log file
+        """
+
+        logger = logging.getLogger('')
+        logger.handlers = []
+        logger.setLevel(logging.DEBUG)
+
+        # create file handler which logs even debug messages
+        file_handler = logging.FileHandler(
+                os.path.join(self.log_dir, "results.log"), mode='wb'
+        )
+        file_handler.setLevel(logging.DEBUG)
+
+        # create console handler with a higher log level
+        console_handler = logging.StreamHandler()
+        console_handler.setLevel(logging.ERROR)
+
+        # create formatter and add it to the handlers
+        formatter = logging.Formatter('%(asctime)s - %(message)s')
+        file_handler.setFormatter(formatter)
+        console_handler.setFormatter(formatter)
+
+        # add handlers
+        logger.addHandler(file_handler)
+        logger.addHandler(console_handler)
+
+        # Store
+        self.logger = logger
