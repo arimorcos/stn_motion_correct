@@ -5,6 +5,7 @@ import theano.tensor as T
 import re
 import os
 import cPickle
+import sys
 import warnings
 import logging
 from batch_norm import batch_norm
@@ -118,7 +119,7 @@ class stn:
         # Create theano function
         self.process = theano.function([self.input_batch], output)
 
-    def create_network_graph(self, batch_size=32, should_batch_norm=True):
+    def create_network_graph(self, batch_size=32, should_batch_norm=False):
         """
         Builds a spatial transformer network
         :param should_batch_norm: Whether or not to use batch normalization
@@ -229,6 +230,24 @@ class stn:
         with open(log_file, 'wb') as f:
             param_values = self.get_param_values()
             cPickle.dump(param_values, f, protocol=cPickle.HIGHEST_PROTOCOL)
+
+    def save_model(self, save_file):
+        """
+        Saves the entire network model
+        :param save_file: path to file to save
+        :return: None
+        """
+
+        # Get old recursion limit and set recursion limit to very high
+        old_recursion_limit = sys.getrecursionlimit()
+        sys.setrecursionlimit(int(1e5))
+
+        # save the model
+        with open(save_file, mode='wb') as f:
+            cPickle.dump(self, f, protocol=cPickle.HIGHEST_PROTOCOL)
+
+        # Reset old recursion limit
+        sys.setrecursionlimit(old_recursion_limit)
 
     def set_parameters(self, param_file=None, epoch=None):
         """

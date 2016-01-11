@@ -12,9 +12,7 @@ def do_train(batch_size=16):
 
     ############### RUN #################
     # Train network
-
     num_batches = 1000*1000
-    last_cost = 100000000
 
     # Get directory based on date
     root_dir = '/media/arimorcos/4TB External/stn_conv_net'
@@ -30,16 +28,8 @@ def do_train(batch_size=16):
 
         temp_cost = network.train_adam(curr_batch_input, curr_batch_ref)
 
-        # if temp_cost > 1.5*last_cost:
-        #     del network
-        #     print("Bad initialization...restarting...")
-        #     do_train()
-        #     return
-
         if batch % print_every == 0:
             print("Batch: {} | Cost: {:.5f}".format(batch, temp_cost.tolist()))
-
-        last_cost = temp_cost
 
 # Set batch size
 batch_size = 16
