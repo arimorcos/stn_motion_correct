@@ -106,10 +106,25 @@ def mean_center_img(img):
     :return: normalized image array
     """
 
-    for page in range(img.shape[2]):
-        temp_page = img[:, :, page]
-        img[:, :, page] = (temp_page - temp_page.mean())/temp_page.std()
+    # Get original shape
+    orig_shape = img.shape
 
-    return img
+    # Get number of pixels per page
+    num_pixels_per_page = orig_shape[0]*orig_shape[1]
+
+    # Reshape tiff to num_pixels_per_page x num_pages
+    reshape_img = np.reshape(img, (num_pixels_per_page, -1))
+
+    # Take mean and std
+    page_means = reshape_img.mean(axis=0)
+    page_stds = reshape_img.std(axis=0)
+
+    # Mean center each page
+    reshape_img = (reshape_img - page_means)/page_stds
+
+    # Reshape to appropriate size
+    return np.reshape(reshape_img, orig_shape)
+
+
 
 
