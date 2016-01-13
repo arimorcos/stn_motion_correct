@@ -16,18 +16,33 @@ class stn:
     Class to instantiate a spatial transformer network
     """
 
-    def __init__(self, batch_size=32, alpha=0.0005, max_norm=5., log_dir=None, save_every=10):
+    def __init__(self, batch_size=32, alpha=0.0005, max_norm=5., log_dir=None, save_every=10,
+                 dropout_frac=0.5, initialization='glorot_uniform'):
+        """
+        :param batch_size: batch_size for the network (pre-specifying allows for theano optimizations)
+        :param alpha: initial learning rate
+        :param max_norm: maximum norm on the gradient
+        :param log_dir: where should the log directory be
+        :param save_every: how often to save parameters
+        :param dropout_frac: Fraction for dropout
+        :param initialization: Which initialization regime to use. Default is 'glorot_uniform'. Options are {
+            'glorot_uniform', 'glorot_normal', 'orthogonal'}
+        """
+
 
         # Initialize parameters
         self.batch_size = batch_size
         self.alpha = alpha
         self.max_norm = max_norm
         self.log_dir = log_dir
+        self.initialization = initialization
+        self.dropout_frac =dropout_frac
         self.curr_epoch = 0
         self.save_every = save_every
 
         # Create the graph
-        self.create_network_graph(batch_size=self.batch_size)
+        # self.create_network_graph(batch_size=self.batch_size)
+        self.create_simple_network_graph(batch_size=self.batch_size)
 
         # Create relevant inputs
         self.create_inputs()
@@ -55,10 +70,13 @@ class stn:
         updates = lasagne.updates.total_norm_constraint(self.all_gradients,
                                                               max_norm=self.max_norm)
 
+        # Create learning rate
+        self.shared_lr = theano.shared(lasagne.utils.floatX(self.alpha))
+
         # Create adam function
         updates = lasagne.updates.adam(updates,
                                        self.params_to_train,
-                                       learning_rate=self.alpha)
+                                       learning_rate=self.shared_lr)
 
         # Create train function
         self.train_adam_helper = theano.function([self.input_batch, self.ref_imgs],
@@ -118,6 +136,73 @@ class stn:
 
         # Create theano function
         self.process = theano.function([self.input_batch], output)
+
+    def create_simple_network_graph(self, batch_size=32):
+        """
+        Builds a spatial transformer network
+        :param batch_size: batch_size for optimization
+        :return:
+        """
+
+        # Set initialization scheme
+        if self.initialization == 'glorot_uniform':
+            W_ini = lasagne.init.GlorotUniform()
+        elif self.initialization == 'glorot_normal':
+            W_ini = lasagne.init.GlorotNormal()
+        elif self.initialization == 'orthogonal':
+            W_ini = lasagne.init.Orthogonal()
+        else:
+            raise AttributeError('Initialization string {} not understood'.format(self.initialization))
+
+        # Input layer with size (batch_size, num_channels, height, width).
+        # In our case, each channel will represent the image to change and the reference image.
+        input_layer = lasagne.layers.InputLayer((batch_size, 2, 512, 512))
+
+        # convolutions
+        conv_layer_1 = lasagne.layers.Conv2DLayer(input_layer, num_filters=16, filter_size=(3, 3),
+                                                  stride=1, pad='full', name='conv_1', W=W_ini)
+        conv_layer_2 = lasagne.layers.Conv2DLayer(conv_layer_1, num_filters=16, filter_size=(3, 3),
+                                                  stride=1, pad='full', name='conv_2', W=W_ini)
+
+        # pool
+        pool_layer_1 = lasagne.layers.MaxPool2DLayer(conv_layer_2, pool_size=(2, 2), name='pool_1')
+
+
+        # convolutions
+        conv_layer_3 = lasagne.layers.Conv2DLayer(pool_layer_1, num_filters=32, filter_size=(3, 3),
+                                                  stride=1, pad='full', name='conv_3', W=W_ini)
+        conv_layer_4 = lasagne.layers.Conv2DLayer(conv_layer_3, num_filters=32, filter_size=(3, 3),
+                                                  stride=1, pad='full', name='conv_4', W=W_ini)
+
+        # pool
+        pool_layer_2 = lasagne.layers.MaxPool2DLayer(conv_layer_4, pool_size=(2, 2), name='pool_2')
+
+        # Dense layers
+        dense_layer_1 = lasagne.layers.DenseLayer(pool_layer_2, num_units=128, W=W_ini,
+                                                  name='dense_1', nonlinearity=lasagne.nonlinearities.rectify)
+        dense_layer_2 = lasagne.layers.DenseLayer(dense_layer_1, num_units=128, W=W_ini,
+                                                  name='dense_2', nonlinearity=lasagne.nonlinearities.rectify)
+
+        # Initialize affine transform to identity
+        b = np.zeros((2, 3), dtype=theano.config.floatX)
+        b[0, 0] = 1
+        b[1, 1] = 1
+
+        # Final affine layer
+        affine_layer = lasagne.layers.DenseLayer(dense_layer_2, num_units=6, W=lasagne.init.Constant(0.0),
+                                                 b=b.flatten(), nonlinearity=lasagne.nonlinearities.identity,
+                                                 name='affine')
+
+        # Finally, create the transformer network
+        transformer = lasagne.layers.TransformerLayer(incoming=input_layer,
+                                                      localization_network=affine_layer,
+                                                      downsample_factor=1)
+
+        # Slice out the first channel
+        transformer = lasagne.layers.SliceLayer(transformer, indices=0, axis=1)
+
+        # Return
+        self.transformer_graph = transformer
 
     def create_network_graph(self, batch_size=32, should_batch_norm=False):
         """

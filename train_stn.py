@@ -4,7 +4,7 @@ import image_manager
 import datetime
 
 
-def do_train(batch_size=16):
+def do_train(batch_size=32):
 
     ################ NETWORK ###############
     # Create network
@@ -29,7 +29,7 @@ def do_train(batch_size=16):
         temp_cost = network.train_adam(curr_batch_input, curr_batch_ref)
 
         if batch % print_every == 0:
-            print("Batch: {} | Cost: {:.5f}".format(batch, temp_cost.tolist()))
+            print("Batch: {} | Cost: {:.9f}".format(batch, temp_cost.tolist()))
 
 # Set batch size
 batch_size = 16
