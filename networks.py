@@ -26,7 +26,7 @@ class stn:
         :param save_every: how often to save parameters
         :param dropout_frac: Fraction for dropout
         :param initialization: Which initialization regime to use. Default is 'glorot_uniform'. Options are {
-            'glorot_uniform', 'glorot_normal', 'orthogonal'}
+            'glorot', 'glorot_uniform', 'glorot_normal', 'orthogonal', 'he', 'he_normal', 'he_uniform'}
         """
 
 
@@ -146,9 +146,17 @@ class stn:
 
         # Set initialization scheme
         if self.initialization == 'glorot_uniform':
-            W_ini = lasagne.init.GlorotUniform()
+            W_ini = lasagne.init.GlorotUniform('relu')
+        elif self.initialization == 'glorot':
+            W_ini = lasagne.init.Glorot('relu')
         elif self.initialization == 'glorot_normal':
-            W_ini = lasagne.init.GlorotNormal()
+            W_ini = lasagne.init.GlorotNormal('relu')
+        elif self.initialization == 'he':
+            W_ini = lasagne.init.He('relu')
+        elif self.initialization == 'he_normal':
+            W_ini = lasagne.init.HeNormal('relu')
+        elif self.initialization == 'he_uniform':
+            W_ini = lasagne.init.HeUniform('relu')
         elif self.initialization == 'orthogonal':
             W_ini = lasagne.init.Orthogonal()
         else:
@@ -167,7 +175,6 @@ class stn:
         # pool
         pool_layer_1 = lasagne.layers.MaxPool2DLayer(conv_layer_2, pool_size=(2, 2), name='pool_1')
 
-
         # convolutions
         conv_layer_3 = lasagne.layers.Conv2DLayer(pool_layer_1, num_filters=32, filter_size=(3, 3),
                                                   stride=1, pad='full', name='conv_3', W=W_ini)
@@ -180,8 +187,10 @@ class stn:
         # Dense layers
         dense_layer_1 = lasagne.layers.DenseLayer(pool_layer_2, num_units=128, W=W_ini,
                                                   name='dense_1', nonlinearity=lasagne.nonlinearities.rectify)
-        dense_layer_2 = lasagne.layers.DenseLayer(dense_layer_1, num_units=128, W=W_ini,
+        dense_layer_1_dropout = lasagne.layers.DropoutLayer(dense_layer_1, p=self.dropout_frac, name='dense_1_dropout')
+        dense_layer_2 = lasagne.layers.DenseLayer(dense_layer_1_dropout, num_units=128, W=W_ini,
                                                   name='dense_2', nonlinearity=lasagne.nonlinearities.rectify)
+        dense_layer_2_dropout = lasagne.layers.DropoutLayer(dense_layer_2, p=self.dropout_frac, name='dense_2_dropout')
 
         # Initialize affine transform to identity
         b = np.zeros((2, 3), dtype=theano.config.floatX)
@@ -189,7 +198,7 @@ class stn:
         b[1, 1] = 1
 
         # Final affine layer
-        affine_layer = lasagne.layers.DenseLayer(dense_layer_2, num_units=6, W=lasagne.init.Constant(0.0),
+        affine_layer = lasagne.layers.DenseLayer(dense_layer_2_dropout, num_units=6, W=lasagne.init.Constant(0.0),
                                                  b=b.flatten(), nonlinearity=lasagne.nonlinearities.identity,
                                                  name='affine')
 
