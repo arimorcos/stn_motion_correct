@@ -26,7 +26,7 @@ class stn:
         :param save_every: how often to save parameters
         :param dropout_frac: Fraction for dropout
         :param initialization: Which initialization regime to use. Default is 'glorot_uniform'. Options are {
-            'glorot', 'glorot_uniform', 'glorot_normal', 'orthogonal', 'he', 'he_normal', 'he_uniform'}
+            'glorot_uniform', 'glorot_normal', 'orthogonal', 'he_normal', 'he_uniform'}
         """
 
 
@@ -36,7 +36,7 @@ class stn:
         self.max_norm = max_norm
         self.log_dir = log_dir
         self.initialization = initialization
-        self.dropout_frac =dropout_frac
+        self.dropout_frac = dropout_frac
         self.curr_epoch = 0
         self.save_every = save_every
 
@@ -85,12 +85,12 @@ class stn:
 
     def train_adam(self, input_batch, ref_imgs):
 
-        # Train network
-        cost = self.train_adam_helper(input_batch, ref_imgs)
-
         # Save parameters
         if self.curr_epoch % self.save_every == 0:
             self.save_parameters()
+
+        # Train network
+        cost = self.train_adam_helper(input_batch, ref_imgs)
 
         # Add to log
         self.logger.info(
@@ -109,7 +109,7 @@ class stn:
         # Create input tensor
         self.input_batch = T.tensor4('input_batch', dtype=theano.config.floatX)
 
-        # Create reference tensor (batch_size, 1, height, width)
+        # Create reference tensor (batch_size, height, width)
         self.ref_imgs = T.tensor3('ref_imgs', dtype=theano.config.floatX)
 
     def initialize_cost(self):
@@ -120,8 +120,37 @@ class stn:
         # get the transformed images
         predictions = lasagne.layers.get_output(self.transformer_graph, self.input_batch)
 
-        # add in the cost
-        self.cost = lasagne.objectives.squared_error(predictions, self.ref_imgs).mean()
+        # add in the cost (mse)
+        # self.cost = lasagne.objectives.squared_error(predictions, self.ref_imgs).mean()
+
+        #### add in the cost (pixel weighted mse)
+        squared_error = lasagne.objectives.squared_error(predictions, self.ref_imgs)  # get squared error
+
+        # Manipulate each ref image to be sum to 1
+        ref_shape = self.ref_imgs.shape  # Get shape for convenience
+        ref_img_reshape = T.reshape(self.ref_imgs, newshape=(ref_shape[0], ref_shape[1]*ref_shape[2]),
+                                    ndim=2)  # reshape to batch_size x num_pixels
+        # self.get_shape_1 = theano.function([self.ref_imgs], ref_img_reshape.shape)
+        ref_img_max = ref_img_reshape.max(axis=1).dimshuffle((0, 'x'))  # Get max for each image and create
+                                                                        # broadcastable dimension
+        ref_img_min = ref_img_reshape.min(axis=1).dimshuffle((0, 'x'))  # get min for each image
+        # self.get_max_min_shape = theano.function([self.ref_imgs], [ref_img_max.shape, ref_img_min.shape])
+        ref_img_norm = (ref_img_reshape - ref_img_min) / (ref_img_max - ref_img_min)  # norm each image between 0 and 1
+        # self.get_norm_shape = theano.function([self.ref_imgs], ref_img_norm.shape)
+
+        # self.get_ref_norm = theano.function([self.ref_imgs], ref_img_norm)
+        #
+        # self.get_norm_max_min = theano.function([self.ref_imgs], [ref_img_norm.max(axis=1), ref_img_norm.min(axis=1)])
+
+        ref_img_partition = ref_img_norm / T.sum(ref_img_norm, axis=1).dimshuffle((0, 'x'))  # Partition so it sums to 1
+        # self.get_shape_2 = theano.function([self.ref_imgs], ref_img_partition.shape)
+        # norm_sum = T.sum(ref_img_norm, axis=1)
+        # part_sum = T.sum(ref_img_partition, axis=1)
+        # self.new_sum = theano.function([self.ref_imgs], [norm_sum, part_sum])
+        ref_img_partition = T.reshape(ref_img_partition, self.ref_imgs.shape)  # return to original shape
+
+        # Aggregate using the normalized ref image as the weights
+        self.cost = (squared_error * ref_img_partition).mean()
 
         # create function
         self.get_cost = theano.function([self.input_batch, self.ref_imgs], self.cost)
