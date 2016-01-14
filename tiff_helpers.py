@@ -1,5 +1,5 @@
 import numpy as np
-from tifffile import TiffFile
+from tifffile import TiffFile, imsave
 import warnings
 import matplotlib.pyplot as plt
 
@@ -52,6 +52,18 @@ def read_tiff(path, pages=None):
     return tiff_array
 
 
+def write_tiff(tiff, path):
+    """
+    Writes a tiff stack
+    :param tiff: tiff to write
+    :param path: Full path to file
+    """
+
+    tiff = np.transpose(tiff, axes=(2, 0, 1))
+
+    imsave(path, tiff)
+
+
 def get_num_tiff_pages(path):
     """
     Returns the number of pages in the tiff
@@ -82,11 +94,45 @@ def imshowpair(img_1, img_2, ax=None):
     img_1 = norm_img(img_1)
     img_2 = norm_img(img_2)
 
+    # Ensure images have same mean
+    img_2 *= (img_1.mean()/img_2.mean())
+
     # Concatenate image
     show_img = np.stack((img_1, img_2, zero_pad), axis=2)
 
     # Plot
     ax.imshow(show_img)
+
+
+def show_diff(img_1, img_2, ax=None):
+    """
+    Displays the difference between two images
+    :param img_1:
+    :param img_2:
+    """
+
+    if ax is None:
+        ax = plt.gca()
+
+    img_diff = (img_1 - img_2)**2
+
+    ax.imshow(img_diff, cmap='gray')
+
+
+def show_diff_hist(img_1, img_2, ax=None, dsamp=8):
+    """
+    Displays the difference between two images
+    :param img_1:
+    :param img_2:
+    """
+
+    if ax is None:
+        ax = plt.gca()
+
+    img_diff = (img_1 - img_2)**2
+    img_diff = img_diff[::dsamp, ::dsamp]
+
+    ax.hist(img_diff.flatten(), bins=100)
 
 
 def norm_img(img):
@@ -125,6 +171,16 @@ def mean_center_img(img):
     # Reshape to appropriate size
     return np.reshape(reshape_img, orig_shape)
 
+
+def get_mse(img_1, img_2):
+    """
+    Calculates the mean squared error between the two images
+    :param img_1: image 1
+    :param img_2: image 2
+    :return: scalar mean squared error
+    """
+
+    return np.mean((img_1 - img_2)**2)
 
 
 
