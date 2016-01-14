@@ -9,7 +9,7 @@ class motion_corrector:
     Handles the actual motion correction of tiff files. Automatically interfaces with a trained spatial transformer
     network and contains methods to motion correct individual files.
     """
-    default_param_file = '/media/arimorcos/4TB External/stn_conv_net/160113_122039/Epoch_2900_weights.pkl'
+    default_param_file = '/media/arimorcos/4TB External/stn_conv_net/160114_132004/Epoch_0300_weights.pkl'
 
     def __init__(self, batch_size=128, param_file=None):
         """

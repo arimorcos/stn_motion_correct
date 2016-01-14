@@ -145,6 +145,17 @@ def norm_img(img):
     return (img - img.min())/(img.max() - img.min())
 
 
+def get_mse(img_1, img_2):
+    """
+    Calculates the mean squared error between the two images
+    :param img_1: image 1
+    :param img_2: image 2
+    :return: scalar mean squared error
+    """
+
+    return np.mean((img_1 - img_2)**2)
+
+
 def mean_center_img(img):
     """
     Makes each image in a stack have zero mean and unit std
@@ -172,15 +183,23 @@ def mean_center_img(img):
     return np.reshape(reshape_img, orig_shape)
 
 
-def get_mse(img_1, img_2):
+def get_pixel_weighted_mse(test, ref):
     """
-    Calculates the mean squared error between the two images
-    :param img_1: image 1
-    :param img_2: image 2
+    Calculates the mean squared error weighted by the pixel values of the reference image and multiplied by 1 million
+    :param test: test image
+    :param ref: reference image
     :return: scalar mean squared error
     """
 
-    return np.mean((img_1 - img_2)**2)
+    # Get squared error
+    squared_error = (test - ref)**2
+
+    # Normalize and partition ref
+    ref_norm = norm_img(ref)
+    ref_partition = ref_norm / np.sum(ref_norm)
+
+    # Take weighted mean
+    return (ref_partition * squared_error).mean() * 1e6
 
 
 

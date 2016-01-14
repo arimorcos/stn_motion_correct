@@ -6,17 +6,17 @@ import numpy as np
 import lasagne
 
 
-def do_train(batch_size=32, cost_gap=40, anneal_thresh=0.001,
-             anneal_val=5, anneal_delay=100):
+def do_train(batch_size=32, cost_gap=200, anneal_thresh=0.0005,
+             anneal_val=2, anneal_delay=100):
 
     ################ NETWORK ###############
     # Create network
-    network = networks.stn(batch_size=batch_size, save_every=100,
-                           initialization='he_normal', max_norm=15,
+    network = networks.stn_affine(batch_size=batch_size, save_every=100,
+                           initialization='glorot_normal', max_norm=15,
                            alpha=0.001)
 
     # force init
-    # network.set_parameters('/media/arimorcos/4TB External/stn_conv_net/160113_122039/Epoch_0000_weights.pkl')
+    # network.set_parameters('/media/arimorcos/4TB External/stn_conv_net/160114_125908/Epoch_0000_weights.pkl')
 
     ############### RUN #################
     # Train network
@@ -26,6 +26,7 @@ def do_train(batch_size=32, cost_gap=40, anneal_thresh=0.001,
     root_dir = '/media/arimorcos/4TB External/stn_conv_net'
     new_log_dir = os.path.join(root_dir, datetime.datetime.now().strftime('%y%m%d_%H%M%S'))
     network.set_log_dir(new_log_dir)
+    print "log directory: {}".format(network.get_log_dir())
 
     print_every = 5
     cost = []
@@ -50,6 +51,7 @@ def do_train(batch_size=32, cost_gap=40, anneal_thresh=0.001,
                 new_lr = network.shared_lr.get_value()/anneal_val
                 network.shared_lr.set_value(lasagne.utils.floatX(new_lr))
                 last_anneal = 0
+                anneal_thresh /= anneal_val
                 print("Annealing learning rate. New rate: {:.9f}".format(float(network.shared_lr.get_value())))
             else:
                 last_anneal += 1

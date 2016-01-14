@@ -9,12 +9,15 @@ import sys
 import warnings
 import logging
 from batch_norm import batch_norm
+from tps import from_control_points
+from abc import ABCMeta, abstractmethod
 
 
-class stn:
+class generic_stn:
     """
     Class to instantiate a spatial transformer network
     """
+    __metaclass__ = ABCMeta
 
     def __init__(self, batch_size=32, alpha=0.0005, max_norm=5., log_dir=None, save_every=10,
                  dropout_frac=0.5, initialization='glorot_uniform'):
@@ -28,7 +31,6 @@ class stn:
         :param initialization: Which initialization regime to use. Default is 'glorot_uniform'. Options are {
             'glorot_uniform', 'glorot_normal', 'orthogonal', 'he_normal', 'he_uniform'}
         """
-
 
         # Initialize parameters
         self.batch_size = batch_size
@@ -111,136 +113,6 @@ class stn:
 
         # Create reference tensor (batch_size, height, width)
         self.ref_imgs = T.tensor3('ref_imgs', dtype=theano.config.floatX)
-
-    def initialize_cost(self):
-        """
-        Initializes the cost function
-        """
-
-        # get the transformed images
-        predictions = lasagne.layers.get_output(self.transformer_graph, self.input_batch)
-
-        # add in the cost (mse)
-        # self.cost = lasagne.objectives.squared_error(predictions, self.ref_imgs).mean()
-
-        #### add in the cost (pixel weighted mse)
-        squared_error = lasagne.objectives.squared_error(predictions, self.ref_imgs)  # get squared error
-
-        # Manipulate each ref image to be sum to 1
-        ref_shape = self.ref_imgs.shape  # Get shape for convenience
-        ref_img_reshape = T.reshape(self.ref_imgs, newshape=(ref_shape[0], ref_shape[1]*ref_shape[2]),
-                                    ndim=2)  # reshape to batch_size x num_pixels
-        # self.get_shape_1 = theano.function([self.ref_imgs], ref_img_reshape.shape)
-        ref_img_max = ref_img_reshape.max(axis=1).dimshuffle((0, 'x'))  # Get max for each image and create
-                                                                        # broadcastable dimension
-        ref_img_min = ref_img_reshape.min(axis=1).dimshuffle((0, 'x'))  # get min for each image
-        # self.get_max_min_shape = theano.function([self.ref_imgs], [ref_img_max.shape, ref_img_min.shape])
-        ref_img_norm = (ref_img_reshape - ref_img_min) / (ref_img_max - ref_img_min)  # norm each image between 0 and 1
-        # self.get_norm_shape = theano.function([self.ref_imgs], ref_img_norm.shape)
-
-        # self.get_ref_norm = theano.function([self.ref_imgs], ref_img_norm)
-        #
-        # self.get_norm_max_min = theano.function([self.ref_imgs], [ref_img_norm.max(axis=1), ref_img_norm.min(axis=1)])
-
-        ref_img_partition = ref_img_norm / T.sum(ref_img_norm, axis=1).dimshuffle((0, 'x'))  # Partition so it sums to 1
-        # self.get_shape_2 = theano.function([self.ref_imgs], ref_img_partition.shape)
-        # norm_sum = T.sum(ref_img_norm, axis=1)
-        # part_sum = T.sum(ref_img_partition, axis=1)
-        # self.new_sum = theano.function([self.ref_imgs], [norm_sum, part_sum])
-        ref_img_partition = T.reshape(ref_img_partition, self.ref_imgs.shape)  # return to original shape
-
-        # Aggregate using the normalized ref image as the weights
-        self.cost = (squared_error * ref_img_partition).mean()
-
-        # create function
-        self.get_cost = theano.function([self.input_batch, self.ref_imgs], self.cost)
-
-    def initialize_process(self):
-        """
-        Initializes the process function
-        """
-
-        # Create symbolic output
-        output = lasagne.layers.get_output(self.transformer_graph, self.input_batch, deterministic=True)
-
-        # Create theano function
-        self.process = theano.function([self.input_batch], output)
-
-    def create_simple_network_graph(self, batch_size=32):
-        """
-        Builds a spatial transformer network
-        :param batch_size: batch_size for optimization
-        :return:
-        """
-
-        # Set initialization scheme
-        if self.initialization == 'glorot_uniform':
-            W_ini = lasagne.init.GlorotUniform('relu')
-        elif self.initialization == 'glorot':
-            W_ini = lasagne.init.Glorot('relu')
-        elif self.initialization == 'glorot_normal':
-            W_ini = lasagne.init.GlorotNormal('relu')
-        elif self.initialization == 'he':
-            W_ini = lasagne.init.He('relu')
-        elif self.initialization == 'he_normal':
-            W_ini = lasagne.init.HeNormal('relu')
-        elif self.initialization == 'he_uniform':
-            W_ini = lasagne.init.HeUniform('relu')
-        elif self.initialization == 'orthogonal':
-            W_ini = lasagne.init.Orthogonal()
-        else:
-            raise AttributeError('Initialization string {} not understood'.format(self.initialization))
-
-        # Input layer with size (batch_size, num_channels, height, width).
-        # In our case, each channel will represent the image to change and the reference image.
-        input_layer = lasagne.layers.InputLayer((batch_size, 2, 512, 512))
-
-        # convolutions
-        conv_layer_1 = lasagne.layers.Conv2DLayer(input_layer, num_filters=16, filter_size=(3, 3),
-                                                  stride=1, pad='full', name='conv_1', W=W_ini)
-        conv_layer_2 = lasagne.layers.Conv2DLayer(conv_layer_1, num_filters=16, filter_size=(3, 3),
-                                                  stride=1, pad='full', name='conv_2', W=W_ini)
-
-        # pool
-        pool_layer_1 = lasagne.layers.MaxPool2DLayer(conv_layer_2, pool_size=(2, 2), name='pool_1')
-
-        # convolutions
-        conv_layer_3 = lasagne.layers.Conv2DLayer(pool_layer_1, num_filters=32, filter_size=(3, 3),
-                                                  stride=1, pad='full', name='conv_3', W=W_ini)
-        conv_layer_4 = lasagne.layers.Conv2DLayer(conv_layer_3, num_filters=32, filter_size=(3, 3),
-                                                  stride=1, pad='full', name='conv_4', W=W_ini)
-
-        # pool
-        pool_layer_2 = lasagne.layers.MaxPool2DLayer(conv_layer_4, pool_size=(2, 2), name='pool_2')
-
-        # Dense layers
-        dense_layer_1 = lasagne.layers.DenseLayer(pool_layer_2, num_units=128, W=W_ini,
-                                                  name='dense_1', nonlinearity=lasagne.nonlinearities.rectify)
-        dense_layer_1_dropout = lasagne.layers.DropoutLayer(dense_layer_1, p=self.dropout_frac, name='dense_1_dropout')
-        dense_layer_2 = lasagne.layers.DenseLayer(dense_layer_1_dropout, num_units=128, W=W_ini,
-                                                  name='dense_2', nonlinearity=lasagne.nonlinearities.rectify)
-        dense_layer_2_dropout = lasagne.layers.DropoutLayer(dense_layer_2, p=self.dropout_frac, name='dense_2_dropout')
-
-        # Initialize affine transform to identity
-        b = np.zeros((2, 3), dtype=theano.config.floatX)
-        b[0, 0] = 1
-        b[1, 1] = 1
-
-        # Final affine layer
-        affine_layer = lasagne.layers.DenseLayer(dense_layer_2_dropout, num_units=6, W=lasagne.init.Constant(0.0),
-                                                 b=b.flatten(), nonlinearity=lasagne.nonlinearities.identity,
-                                                 name='affine')
-
-        # Finally, create the transformer network
-        transformer = lasagne.layers.TransformerLayer(incoming=input_layer,
-                                                      localization_network=affine_layer,
-                                                      downsample_factor=1)
-
-        # Slice out the first channel
-        transformer = lasagne.layers.SliceLayer(transformer, indices=0, axis=1)
-
-        # Return
-        self.transformer_graph = transformer
 
     def create_network_graph(self, batch_size=32, should_batch_norm=False):
         """
@@ -486,3 +358,342 @@ class stn:
 
         # Store
         self.logger = logger
+
+    @abstractmethod
+    def initialize_cost(self):
+        pass
+
+    @abstractmethod
+    def initialize_process(self):
+        pass
+
+    @abstractmethod
+    def create_simple_network_graph(self, batch_size):
+        pass
+
+
+class stn_affine(generic_stn):
+    """
+    Class to instantiate a spatial transformer network
+    """
+
+    def initialize_cost(self):
+        """
+        Initializes the cost function
+        """
+
+        # get the transformed images
+        predictions = lasagne.layers.get_output(self.transformer_graph, self.input_batch)
+
+        # add in the cost (mse)
+        self.cost = lasagne.objectives.squared_error(predictions, self.ref_imgs).mean()
+
+        #### add in the cost (pixel weighted mse)
+        # squared_error = lasagne.objectives.squared_error(predictions, self.ref_imgs)  # get squared error
+        #
+        # # Manipulate each ref image to be sum to 1
+        # ref_shape = self.ref_imgs.shape  # Get shape for convenience
+        # ref_img_reshape = T.reshape(self.ref_imgs, newshape=(ref_shape[0], ref_shape[1]*ref_shape[2]),
+        #                             ndim=2)  # reshape to batch_size x num_pixels
+        # # self.get_shape_1 = theano.function([self.ref_imgs], ref_img_reshape.shape)
+        # ref_img_max = ref_img_reshape.max(axis=1).dimshuffle((0, 'x'))  # Get max for each image and create
+        #                                                                 # broadcastable dimension
+        # ref_img_min = ref_img_reshape.min(axis=1).dimshuffle((0, 'x'))  # get min for each image
+        # # self.get_max_min_shape = theano.function([self.ref_imgs], [ref_img_max.shape, ref_img_min.shape])
+        # ref_img_norm = (ref_img_reshape - ref_img_min) / (ref_img_max - ref_img_min)  # norm each image between 0 and 1
+        # # self.get_norm_shape = theano.function([self.ref_imgs], ref_img_norm.shape)
+        #
+        # # self.get_ref_norm = theano.function([self.ref_imgs], ref_img_norm)
+        # #
+        # # self.get_norm_max_min = theano.function([self.ref_imgs], [ref_img_norm.max(axis=1), ref_img_norm.min(axis=1)])
+        #
+        # ref_img_partition = ref_img_norm / T.sum(ref_img_norm, axis=1).dimshuffle((0, 'x'))  # Partition so it sums to 1
+        # # self.get_shape_2 = theano.function([self.ref_imgs], ref_img_partition.shape)
+        # # norm_sum = T.sum(ref_img_norm, axis=1)
+        # # part_sum = T.sum(ref_img_partition, axis=1)
+        # # self.new_sum = theano.function([self.ref_imgs], [norm_sum, part_sum])
+        # ref_img_partition = T.reshape(ref_img_partition, self.ref_imgs.shape)  # return to original shape
+        #
+        # # Aggregate using the normalized ref image as the weights
+        # self.cost = 100000*(squared_error * ref_img_partition).mean()
+
+        # create function
+        self.get_cost = theano.function([self.input_batch, self.ref_imgs], self.cost)
+
+    def initialize_process(self):
+        """
+        Initializes the process function
+        """
+
+        # Create symbolic output
+        output = lasagne.layers.get_output(self.transformer_graph, self.input_batch, deterministic=True)
+
+        # Create theano function
+        self.process = theano.function([self.input_batch], output)
+
+    def create_simple_network_graph(self, batch_size=32):
+        """
+        Builds a spatial transformer network
+        :param batch_size: batch_size for optimization
+        :return:
+        """
+
+        # Set initialization scheme
+        if self.initialization == 'glorot_uniform':
+            W_ini = lasagne.init.GlorotUniform('relu')
+        elif self.initialization == 'glorot':
+            W_ini = lasagne.init.Glorot('relu')
+        elif self.initialization == 'glorot_normal':
+            W_ini = lasagne.init.GlorotNormal('relu')
+        elif self.initialization == 'he':
+            W_ini = lasagne.init.He('relu')
+        elif self.initialization == 'he_normal':
+            W_ini = lasagne.init.HeNormal('relu')
+        elif self.initialization == 'he_uniform':
+            W_ini = lasagne.init.HeUniform('relu')
+        elif self.initialization == 'orthogonal':
+            W_ini = lasagne.init.Orthogonal('relu')
+        else:
+            raise AttributeError('Initialization string {} not understood'.format(self.initialization))
+
+        # Input layer with size (batch_size, num_channels, height, width).
+        # In our case, each channel will represent the image to change and the reference image.
+        input_layer = lasagne.layers.InputLayer((batch_size, 2, 512, 512))
+
+        # convolutions
+        conv_layer_1 = lasagne.layers.Conv2DLayer(input_layer, num_filters=16, filter_size=(3, 3),
+                                                  stride=1, pad='full', name='conv_1', W=W_ini)
+        conv_layer_2 = lasagne.layers.Conv2DLayer(conv_layer_1, num_filters=16, filter_size=(3, 3),
+                                                  stride=1, pad='full', name='conv_2', W=W_ini)
+
+        # pool
+        pool_layer_1 = lasagne.layers.MaxPool2DLayer(conv_layer_2, pool_size=(2, 2), name='pool_1')
+
+        # convolutions
+        conv_layer_3 = lasagne.layers.Conv2DLayer(pool_layer_1, num_filters=32, filter_size=(3, 3),
+                                                  stride=1, pad='full', name='conv_3', W=W_ini)
+        conv_layer_4 = lasagne.layers.Conv2DLayer(conv_layer_3, num_filters=32, filter_size=(3, 3),
+                                                  stride=1, pad='full', name='conv_4', W=W_ini)
+
+        # pool
+        pool_layer_2 = lasagne.layers.MaxPool2DLayer(conv_layer_4, pool_size=(2, 2), name='pool_2')
+
+        # Dense layers
+        dense_layer_1 = lasagne.layers.DenseLayer(pool_layer_2, num_units=128, W=W_ini,
+                                                  name='dense_1', nonlinearity=lasagne.nonlinearities.rectify)
+        dense_layer_1_dropout = lasagne.layers.DropoutLayer(dense_layer_1, p=self.dropout_frac, name='dense_1_dropout')
+        dense_layer_2 = lasagne.layers.DenseLayer(dense_layer_1_dropout, num_units=128, W=W_ini,
+                                                  name='dense_2', nonlinearity=lasagne.nonlinearities.rectify)
+        dense_layer_2_dropout = lasagne.layers.DropoutLayer(dense_layer_2, p=self.dropout_frac, name='dense_2_dropout')
+
+        # Initialize affine transform to identity
+        b = np.zeros((2, 3), dtype=theano.config.floatX)
+        b[0, 0] = 1
+        b[1, 1] = 1
+
+        # Final affine layer
+        affine_layer = lasagne.layers.DenseLayer(dense_layer_2_dropout, num_units=6, W=lasagne.init.Constant(0.0),
+                                                 b=b.flatten(), nonlinearity=lasagne.nonlinearities.identity,
+                                                 name='affine')
+
+        # Finally, create the transformer network
+        transformer = lasagne.layers.TransformerLayer(incoming=input_layer,
+                                                      localization_network=affine_layer,
+                                                      downsample_factor=1)
+
+        # Slice out the first channel
+        transformer = lasagne.layers.SliceLayer(transformer, indices=0, axis=1)
+
+        # Return
+        self.transformer_graph = transformer
+
+
+class stn_tps(generic_stn):
+    """
+    Spatial transformer network using thin-plate-splines.
+
+    NOTE: This uses the thinplatespline python package, which can be found here (
+    https://github.com/olt/thinplatespline). As a result, the thin plate spline transform is not implemented in
+    theano, and, therefore, is not differentiable.
+    """
+
+    def __init__(self, batch_size=32, alpha=0.0005, max_norm=5., log_dir=None, save_every=10,
+                 dropout_frac=0.5, initialization='glorot_uniform', num_control_points=16):
+        """
+        :param batch_size: batch_size for the network (pre-specifying allows for theano optimizations)
+        :param alpha: initial learning rate
+        :param max_norm: maximum norm on the gradient
+        :param log_dir: where should the log directory be
+        :param save_every: how often to save parameters
+        :param dropout_frac: Fraction for dropout
+        :param initialization: Which initialization regime to use. Default is 'glorot_uniform'. Options are {
+            'glorot_uniform', 'glorot_normal', 'orthogonal', 'he_normal', 'he_uniform'}
+        :param num_control_points: integer specifying the number of thin plate spline control points. Must be a
+            perfect square.
+        """
+
+        # Initialize parameters
+        self.batch_size = batch_size
+        self.alpha = alpha
+        self.max_norm = max_norm
+        self.log_dir = log_dir
+        self.initialization = initialization
+        self.dropout_frac = dropout_frac
+        self.num_control_points = num_control_points
+        self.curr_epoch = 0
+        self.save_every = save_every
+
+        # Check num_control_points
+        if np.sqrt(num_control_points) != num_control_points:
+            raise ValueError("Number of control points must be a perfect square.")
+
+        # Create the graph
+        # self.create_network_graph(batch_size=self.batch_size)
+        self.create_simple_network_graph(batch_size=self.batch_size)
+
+        # Create relevant inputs
+        self.create_inputs()
+
+        # Initialize the process and cost functions
+        self.initialize_process()
+        self.initialize_cost()
+
+        # Initialize adam
+        self.initialize_adam()
+
+    def initialize_cost(self):
+        """
+        Initializes the cost function
+        """
+
+        # get the transformed images
+        predictions = lasagne.layers.get_output(self.transformer_graph, self.input_batch)
+
+        # add in the cost (mse)
+        self.cost = lasagne.objectives.squared_error(predictions, self.ref_imgs).mean()
+
+        # create function
+        self.get_cost = theano.function([self.input_batch, self.ref_imgs], self.cost)
+
+    def apply_tps_transform(self, img, control_points):
+        """
+        Applies the thin-plate spline transform to the image provided and outputs the transformed image
+        :param img: The image to be transformed
+        :return: transformed image with the same dimensions as the input image
+        """
+
+        # get the image dimensions
+        height, width = img.shape
+
+        # Generate the start control points
+        grid_size = np.sqrt(self.num_control_points)
+        x_control_t, y_control_t = np.meshgrid(np.linspace(-1, 1, grid_size),
+                               np.linspace(-1, 1, grid_size))
+
+        # Create control matrix comprising a list of 4-element lists, with the following elements:
+        # [source_x, source_y, dest_x, dest_y]
+        control_points = np.reshape(control_points, (-1, 2))
+        full_array = np.vstack((x_control_t.flatten(), y_control_t.flatten(), control_points)).tolist()
+
+        # Create the transformer object
+        tps_transformer = from_control_points(full_array)
+
+        # Generate the input grid
+        x_t, y_t = np.meshgrid(np.linspace(-1, 1, height),
+                               np.linspace(-1, 1, width))
+        x_t = x_t.flatten()
+        y_t = y_t.flatten()
+
+        # transform each point pair
+        x_s = np.empty(x_t.shape)
+        y_s = np.empty(y_t.shape)
+        for ind, (x_coord, y_coord) in enumerate(zip(x_t, y_t)):
+            x_s[ind], y_s[ind] = tps_transformer.transform(x_coord, y_coord)
+
+
+    def initialize_process(self):
+        """
+        Initializes the process function
+        """
+
+        # Create symbolic output
+        output = lasagne.layers.get_output(self.transformer_graph, self.input_batch, deterministic=True)
+
+        # Create theano function
+        self.process = theano.function([self.input_batch], output)
+
+    def create_simple_network_graph(self, batch_size=32):
+        """
+        Builds a spatial transformer network
+        :param batch_size: batch_size for optimization
+        :return:
+        """
+
+        # Set initialization scheme
+        if self.initialization == 'glorot_uniform':
+            W_ini = lasagne.init.GlorotUniform('relu')
+        elif self.initialization == 'glorot':
+            W_ini = lasagne.init.Glorot('relu')
+        elif self.initialization == 'glorot_normal':
+            W_ini = lasagne.init.GlorotNormal('relu')
+        elif self.initialization == 'he':
+            W_ini = lasagne.init.He('relu')
+        elif self.initialization == 'he_normal':
+            W_ini = lasagne.init.HeNormal('relu')
+        elif self.initialization == 'he_uniform':
+            W_ini = lasagne.init.HeUniform('relu')
+        elif self.initialization == 'orthogonal':
+            W_ini = lasagne.init.Orthogonal('relu')
+        else:
+            raise AttributeError('Initialization string {} not understood'.format(self.initialization))
+
+        # Input layer with size (batch_size, num_channels, height, width).
+        # In our case, each channel will represent the image to change and the reference image.
+        input_layer = lasagne.layers.InputLayer((batch_size, 2, 512, 512))
+
+        # convolutions
+        conv_layer_1 = lasagne.layers.Conv2DLayer(input_layer, num_filters=16, filter_size=(3, 3),
+                                                  stride=1, pad='full', name='conv_1', W=W_ini)
+        conv_layer_2 = lasagne.layers.Conv2DLayer(conv_layer_1, num_filters=16, filter_size=(3, 3),
+                                                  stride=1, pad='full', name='conv_2', W=W_ini)
+
+        # pool
+        pool_layer_1 = lasagne.layers.MaxPool2DLayer(conv_layer_2, pool_size=(2, 2), name='pool_1')
+
+        # convolutions
+        conv_layer_3 = lasagne.layers.Conv2DLayer(pool_layer_1, num_filters=32, filter_size=(3, 3),
+                                                  stride=1, pad='full', name='conv_3', W=W_ini)
+        conv_layer_4 = lasagne.layers.Conv2DLayer(conv_layer_3, num_filters=32, filter_size=(3, 3),
+                                                  stride=1, pad='full', name='conv_4', W=W_ini)
+
+        # pool
+        pool_layer_2 = lasagne.layers.MaxPool2DLayer(conv_layer_4, pool_size=(2, 2), name='pool_2')
+
+        # Dense layers
+        dense_layer_1 = lasagne.layers.DenseLayer(pool_layer_2, num_units=128, W=W_ini,
+                                                  name='dense_1', nonlinearity=lasagne.nonlinearities.rectify)
+        dense_layer_1_dropout = lasagne.layers.DropoutLayer(dense_layer_1, p=self.dropout_frac, name='dense_1_dropout')
+        dense_layer_2 = lasagne.layers.DenseLayer(dense_layer_1_dropout, num_units=128, W=W_ini,
+                                                  name='dense_2', nonlinearity=lasagne.nonlinearities.rectify)
+        dense_layer_2_dropout = lasagne.layers.DropoutLayer(dense_layer_2, p=self.dropout_frac, name='dense_2_dropout')
+
+        # Initialize affine transform to identity
+        b = np.zeros((2, 3), dtype=theano.config.floatX)
+        b[0, 0] = 1
+        b[1, 1] = 1
+
+        # Final affine layer
+        affine_layer = lasagne.layers.DenseLayer(dense_layer_2_dropout, num_units=6, W=lasagne.init.Constant(0.0),
+                                                 b=b.flatten(), nonlinearity=lasagne.nonlinearities.identity,
+                                                 name='affine')
+
+        # Finally, create the transformer network
+        transformer = lasagne.layers.TransformerLayer(incoming=input_layer,
+                                                      localization_network=affine_layer,
+                                                      downsample_factor=1)
+
+        # Slice out the first channel
+        transformer = lasagne.layers.SliceLayer(transformer, indices=0, axis=1)
+
+        # Return
+        self.transformer_graph = transformer

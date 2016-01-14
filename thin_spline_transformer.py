@@ -1,6 +1,8 @@
 import lasagne
 import theano
 import theano.tensor as T
+import numpy as np
+from tps import from_control_points
 
 
 class ThinSplineTransformerLayer(lasagne.layers.MergeLayer):
@@ -48,7 +50,7 @@ class ThinSplineTransformerLayer(lasagne.layers.MergeLayer):
     >>> l_trans = lasagne.layers.TransformerLayer(l_in, l_loc)
     """
     def __init__(self, incoming, localization_network, downsample_factor=1,
-                 **kwargs):
+                 num_control_points=16, **kwargs):
         super(ThinSplineTransformerLayer, self).__init__(
             [incoming, localization_network], **kwargs)
         self.downsample_factor = lasagne.utils.as_tuple(downsample_factor, 2)
@@ -71,20 +73,21 @@ class ThinSplineTransformerLayer(lasagne.layers.MergeLayer):
 
     def get_output_for(self, inputs, **kwargs):
         # see eq. (1) and sec 3.1 in [1]
-        input, theta = inputs
-        return _transform(theta, input, self.downsample_factor)
+        input, control_points = inputs
+        return _transform(control_points, input, self.downsample_factor)
 
 
-def _transform(theta, input, downsample_factor):
+def _transform(control_points, input, downsample_factor):
     num_batch, num_channels, height, width = input.shape
-    theta = T.reshape(theta, (-1, 2, 3))
+    num_control_points = control_points.shape[0]/2
 
-    # grid of (x_t, y_t, 1), eq (1) in ref [1]
-    out_height = T.cast(height / downsample_factor[0], 'int64')
-    out_width = T.cast(width / downsample_factor[1], 'int64')
-    grid = _meshgrid(out_height, out_width)
+    # grid of (sqrt(num_control_points), sqrt(num_control_points), 1), similar to eq (1) in ref [1]
+    grid_size = T.cast(T.sqrt(num_control_points), 'int64')
+    orig_grid = _meshgrid(grid_size, grid_size)
+    tps_grid = _generate_tps_grid(control_points)
 
     # Transform A x (x_t, y_t, 1)^T -> (x_s, y_s)
+    # Perform thin-plate-spline transformation for each control point
     T_g = T.dot(theta, grid)
     x_s = T_g[:, 0]
     y_s = T_g[:, 1]
@@ -188,4 +191,31 @@ def _meshgrid(height, width):
     y_t_flat = y_t.reshape((1, -1))
     ones = T.ones_like(x_t_flat)
     grid = T.concatenate([x_t_flat, y_t_flat, ones], axis=0)
+    return grid
+
+def _generate_tps_grid(control_points):
+    """
+    Generates grid coordinates from the control points
+    :param control_points: 2*num_control_points vector containing the x values followed by y values of each control
+        point
+    :return: a vertical stack of the grid
+    """
+
+    # reshape to (num_control_points, 2)
+    control_points = T.reshape(control_points, newshape=(-1, 2))
+
+    # Extract x_t and y_t
+    x_t = control_points[:, 0]
+    y_t = control_points[:, 1]
+
+    # Flatten
+    x_t_flat = x_t.reshape((1, -1))
+    y_t_flat = y_t.reshape((1, -1))
+
+    # Generate ones
+    ones = T.ones_like(x_t_flat)
+
+    # Concatenate
+    grid = T.concatenate([x_t_flat, y_t_flat, ones], axis=0)
+
     return grid
