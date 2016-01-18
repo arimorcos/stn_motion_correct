@@ -9,6 +9,7 @@ import sys
 import warnings
 import logging
 from batch_norm import batch_norm
+from tps_helper import apply_tps_transform
 from abc import ABCMeta, abstractmethod
 
 
@@ -363,10 +364,6 @@ class generic_stn:
         pass
 
     @abstractmethod
-    def initialize_process(self):
-        pass
-
-    @abstractmethod
     def create_simple_network_graph(self, batch_size):
         pass
 
@@ -543,7 +540,7 @@ class stn_tps(generic_stn):
         self.save_every = save_every
 
         # Check num_control_points
-        if np.sqrt(num_control_points) != num_control_points:
+        if np.sqrt(num_control_points) != round(np.sqrt(num_control_points)):
             raise ValueError("Number of control points must be a perfect square.")
 
         # Create the graph
@@ -554,11 +551,10 @@ class stn_tps(generic_stn):
         self.create_inputs()
 
         # Initialize the process and cost functions
-        self.initialize_process()
-        self.initialize_cost()
+        self.initialize_get_tps_params()
 
         # Initialize adam
-        self.initialize_adam()
+        # self.initialize_adam()
 
     def initialize_cost(self):
         """
@@ -574,16 +570,36 @@ class stn_tps(generic_stn):
         # create function
         self.get_cost = theano.function([self.input_batch, self.ref_imgs], self.cost)
 
-    def initialize_process(self):
+    def initialize_get_tps_params(self):
         """
-        Initializes the process function
+        Initializes the function to get the new tps paramaters
         """
 
         # Create symbolic output
-        output = lasagne.layers.get_output(self.transformer_graph, self.input_batch, deterministic=True)
+        tps_params = lasagne.layers.get_output(self.transformer_graph, self.input_batch, deterministic=True)
 
         # Create theano function
-        self.process = theano.function([self.input_batch], output)
+        self.get_tps_params = theano.function([self.input_batch], tps_params)
+
+    def process(self, input_batch):
+        """
+        Initializes the proces function
+        :param input_batch: (batch_size, channels, height, width) input batch image
+        :return: (batch_size, height, width) transformed image
+        """
+
+        # Get cropped down image
+        to_process = input_batch[:, 0, :, :].copy()
+
+        # Get tps parameters
+        tps_params = self.get_tps_params(input_batch)
+
+        # apply transform
+        for batch in range(self.batch_size):
+            to_process[batch, :, :] = apply_tps_transform(to_process[batch, :, :], tps_params[batch, :, :])
+
+        return to_process
+
 
     def create_simple_network_graph(self, batch_size=32):
         """
@@ -640,23 +656,20 @@ class stn_tps(generic_stn):
                                                   name='dense_2', nonlinearity=lasagne.nonlinearities.rectify)
         dense_layer_2_dropout = lasagne.layers.DropoutLayer(dense_layer_2, p=self.dropout_frac, name='dense_2_dropout')
 
-        # Initialize affine transform to identity
-        b = np.zeros((2, 3), dtype=theano.config.floatX)
-        b[0, 0] = 1
-        b[1, 1] = 1
+        # Initialize tps transform to grid of control points
+        grid_size = np.sqrt(self.num_control_points)
+        x_params, y_params = np.meshgrid(np.linspace(-1, 1, grid_size),
+                                         np.linspace(-1, 1, grid_size))
+        tps_params = np.vstack((x_params.flatten(), y_params.flatten())).T.flatten().astype(theano.config.floatX)
 
-        # Final affine layer
-        affine_layer = lasagne.layers.DenseLayer(dense_layer_2_dropout, num_units=6, W=lasagne.init.Constant(0.0),
-                                                 b=b.flatten(), nonlinearity=lasagne.nonlinearities.identity,
-                                                 name='affine')
+        # Final tps layer
+        tps_layer = lasagne.layers.DenseLayer(dense_layer_2_dropout, num_units=2*self.num_control_points,
+                                              W=lasagne.init.Constant(0.0), b=tps_params,
+                                              nonlinearity=lasagne.nonlinearities.identity,
+                                              name='tps')
 
-        # Finally, create the transformer network
-        transformer = lasagne.layers.TransformerLayer(incoming=input_layer,
-                                                      localization_network=affine_layer,
-                                                      downsample_factor=1)
-
-        # Slice out the first channel
-        transformer = lasagne.layers.SliceLayer(transformer, indices=0, axis=1)
+        # Reshape
+        tps_reshape = lasagne.layers.ReshapeLayer(tps_layer, (self.batch_size, self.num_control_points, 2))
 
         # Return
-        self.transformer_graph = transformer
+        self.transformer_graph = tps_reshape
