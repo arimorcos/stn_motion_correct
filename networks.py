@@ -360,10 +360,6 @@ class generic_stn:
         self.logger = logger
 
     @abstractmethod
-    def initialize_cost(self):
-        pass
-
-    @abstractmethod
     def create_simple_network_graph(self, batch_size):
         pass
 
@@ -552,23 +548,63 @@ class stn_tps(generic_stn):
 
         # Initialize the process and cost functions
         self.initialize_get_tps_params()
+        self.initialize_cost()
 
         # Initialize adam
-        # self.initialize_adam()
+        self.initialize_adam()
 
     def initialize_cost(self):
+        self.cost = self.get_cost(self.input_batch, self.ref_imgs)
+
+    def get_cost(self, input_batch, ref_imgs):
         """
-        Initializes the cost function
+        Cost function
         """
 
-        # get the transformed images
-        predictions = lasagne.layers.get_output(self.transformer_graph, self.input_batch)
+        # Get cropped down image
+        to_process = input_batch[:, 0, :, :].copy()
+
+        # Get tps parameters
+        tps_params = self.get_tps_params(input_batch)
+
+        # apply transform
+        for batch in range(self.batch_size):
+            to_process[batch, :, :] = apply_tps_transform(to_process[batch, :, :], tps_params[batch, :, :])
 
         # add in the cost (mse)
-        self.cost = lasagne.objectives.squared_error(predictions, self.ref_imgs).mean()
+        cost = np.mean((to_process - ref_imgs)**2)
 
-        # create function
-        self.get_cost = theano.function([self.input_batch, self.ref_imgs], self.cost)
+        # return
+        return cost
+
+    def initialize_adam(self):
+        """
+        Initializes the adam training function
+        """
+
+        # Get the parameters to train
+        self.params_to_train = lasagne.layers.get_all_params(self.transformer_graph,
+                                                             trainable=True)
+
+        # Get gradients
+        self.all_gradients = T.grad(self.cost, self.params_to_train)
+
+        # Add gradient normalization
+        updates = lasagne.updates.total_norm_constraint(self.all_gradients,
+                                                              max_norm=self.max_norm)
+
+        # Create learning rate
+        self.shared_lr = theano.shared(lasagne.utils.floatX(self.alpha))
+
+        # Create adam function
+        updates = lasagne.updates.adam(updates,
+                                       self.params_to_train,
+                                       learning_rate=self.shared_lr)
+
+        # Create train function
+        self.train_adam_helper = theano.function([self.input_batch, self.ref_imgs],
+                                          self.cost,
+                                          updates=updates)
 
     def initialize_get_tps_params(self):
         """
@@ -599,7 +635,6 @@ class stn_tps(generic_stn):
             to_process[batch, :, :] = apply_tps_transform(to_process[batch, :, :], tps_params[batch, :, :])
 
         return to_process
-
 
     def create_simple_network_graph(self, batch_size=32):
         """

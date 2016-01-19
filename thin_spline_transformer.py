@@ -2,7 +2,6 @@ import lasagne
 import theano
 import theano.tensor as T
 import numpy as np
-from tps import from_control_points
 
 
 class ThinSplineTransformerLayer(lasagne.layers.MergeLayer):
@@ -30,6 +29,10 @@ class ThinSplineTransformerLayer(lasagne.layers.MergeLayer):
     .. [1]  Spatial Transformer Networks
             Max Jaderberg, Karen Simonyan, Andrew Zisserman, Koray Kavukcuoglu
             Submitted on 5 Jun 2015
+    .. [2]  Principal warps: thin-plate splines and the decomposition of deformations.
+            Fred L. Bookstein, 1989, IEEE Transactions on Pattern Analysis and Machine Intelligence.
+            http://doi.org/10.1109/34.24792
+
     Examples
     --------
     Here we set up the layer to initially do the identity transform, similarly
@@ -54,6 +57,7 @@ class ThinSplineTransformerLayer(lasagne.layers.MergeLayer):
         super(ThinSplineTransformerLayer, self).__init__(
             [incoming, localization_network], **kwargs)
         self.downsample_factor = lasagne.utils.as_tuple(downsample_factor, 2)
+        self.num_control_points = num_control_points
 
         input_shp, loc_shp = self.input_shapes
 
@@ -86,13 +90,10 @@ def _transform(control_points, input, downsample_factor):
     orig_grid = _meshgrid(grid_size, grid_size)
     tps_grid = _generate_tps_grid(control_points)
 
-    # Transform A x (x_t, y_t, 1)^T -> (x_s, y_s)
-    # Perform thin-plate-spline transformation for each control point
-    T_g = T.dot(theta, grid)
-    x_s = T_g[:, 0]
-    y_s = T_g[:, 1]
-    x_s_flat = x_s.flatten()
-    y_s_flat = y_s.flatten()
+    ## Perform the thin plate spline transform
+    # Add each point to the transformer
+
+
 
     # dimshuffle input to  (bs, height, width, channels)
     input_dim = input.dimshuffle(0, 2, 3, 1)
@@ -192,6 +193,7 @@ def _meshgrid(height, width):
     ones = T.ones_like(x_t_flat)
     grid = T.concatenate([x_t_flat, y_t_flat, ones], axis=0)
     return grid
+
 
 def _generate_tps_grid(control_points):
     """
