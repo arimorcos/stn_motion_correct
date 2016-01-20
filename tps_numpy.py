@@ -58,7 +58,7 @@ if __name__ == "__main__":
 
     # Create destination grid
     x_offset = 0.5
-    y_offset = 0.1
+    y_offset = np.random.normal(0, 1, y_control_source.size)
     x_control_dest = x_control_source.flatten() + x_offset
     y_control_dest = y_control_source.flatten() + y_offset
 
@@ -87,9 +87,6 @@ if __name__ == "__main__":
     for point in range(num_control_points):
 
         # Set each of the first three rows to the x and y points (here, we're creating the P matrix part)
-        # L[0, point + 3] = 1.
-        # L[1, point + 3] = source_points[0, point]
-        # L[2, point + 3] = source_points[1, point]
         L[0, point + 3] = 1.
         L[1, point + 3] = source_points[0, point]
         L[2, point + 3] = source_points[1, point]
@@ -118,7 +115,7 @@ if __name__ == "__main__":
     coefficients = np.zeros((2, num_equations))
     for variable in range(2):
         for eq_1 in range(num_equations):
-            for eq_2 in range(num_equations):
+            for eq_2 in range(3, num_equations):
                 coefficients[variable, eq_1] += L_inv[eq_1, eq_2] * dest_points[variable, eq_2 - 3]
 
     # Create test points
