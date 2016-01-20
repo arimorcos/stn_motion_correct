@@ -1,5 +1,6 @@
 import numpy as np
 from tps import from_control_points
+import time
 
 
 def U_func(x1, y1, x2, y2):
@@ -48,31 +49,29 @@ def get_transformed_point(new_x, new_y, source_points, coefficients):
     return values
 
 
-if __name__ == "__main__":
-
-    # Create source grid
-    num_control_points = 16
-    grid_size = np.sqrt(num_control_points)
-    x_control_source, y_control_source = np.meshgrid(np.linspace(-1, 1, grid_size),
-                                                     np.linspace(-1, 1, grid_size))
-
-    # Create destination grid
-    x_offset = 0.5
-    y_offset = np.random.normal(0, 1, y_control_source.size)
-    x_control_dest = x_control_source.flatten() + x_offset
-    y_control_dest = y_control_source.flatten() + y_offset
-
+def get_transformed_point_opt(new_x, new_y, source_points, coefficients):
     """
-    Add Points
-        We will have the number of variables, in this case 2 (x and y), hardcoded
+    Calculates the transformed point's value using the provided coefficients
+    :param new_x: x point to transform
+    :param new_y: y point to transform
+    :param source_points: 2 x num_points array of source points
+    :param coefficients: coefficients (should be shape (2, control_points + 3))
+    :return:
     """
+    num_points = source_points.shape[1]
 
-    # Create 2 x n array of x and y source variables
-    source_points = np.vstack((x_control_source.flatten(), y_control_source.flatten()))
+    rep_new = np.tile(np.array((new_x, new_y)), (num_points, 1))
+    r_2 = ((rep_new.T - source_points)**2).sum(axis=0)
+    distances = r_2 * np.log(r_2)
 
-    # Create 2 x n array of x and y destination variables
-    dest_points = np.vstack((x_control_dest, y_control_dest))
+    upper_array = np.array([1, new_x, new_y])
+    right_mat = np.hstack((upper_array, distances))
+    values = coefficients.dot(right_mat)
 
+    return values
+
+
+def solve(num_control_points, source_points, dest_points):
     """
     Solve the equation
     """
@@ -118,13 +117,94 @@ if __name__ == "__main__":
             for eq_2 in range(3, num_equations):
                 coefficients[variable, eq_1] += L_inv[eq_1, eq_2] * dest_points[variable, eq_2 - 3]
 
+    return coefficients
+
+
+def solve_opt(num_control_points, source_points, dest_points):
+    """
+    Solve the equation
+    """
+
+    # Get number of equations
+    num_equations = num_control_points + 3
+
+    # Initialize L to be num_equations square matrix
+    L = np.zeros((num_equations, num_equations))
+
+    # Create P matrix components
+    L[0, 3:num_equations] = 1.
+    L[1:3, 3:num_equations] = source_points
+    L[3:num_equations, 0] = 1.
+    L[3:num_equations, 1:3] = source_points.T
+
+    # Loop through each pair of points and create the K matrix
+    for point_1 in range(num_control_points):
+        for point_2 in range(point_1, num_control_points):
+
+            L[point_1 + 3, point_2 + 3] = U_func(source_points[0, point_1], source_points[1, point_1],
+                                                 source_points[0, point_2], source_points[1, point_2])
+
+            if point_1 != point_2:
+                L[point_2 + 3, point_1 + 3] = L[point_1 + 3, point_2 + 3]
+
+
+    # Now that we have the L matrix, let's actually calculate things
+
+    # First, invert the matrix
+    L_inv = np.linalg.inv(L)
+
+    # Calculate the coefficients for each variable (a_1, a_x, a_y)
+    coefficients = np.zeros((2, num_equations))
+    for variable in range(2):
+        for eq_1 in range(num_equations):
+            for eq_2 in range(3, num_equations):
+                coefficients[variable, eq_1] += L_inv[eq_1, eq_2] * dest_points[variable, eq_2 - 3]
+    return coefficients
+
+
+if __name__ == "__main__":
+
+    # Create source grid
+    num_control_points = 16
+    grid_size = np.sqrt(num_control_points)
+    x_control_source, y_control_source = np.meshgrid(np.linspace(-1, 1, grid_size),
+                                                     np.linspace(-1, 1, grid_size))
+
+    # Create destination grid
+    x_offset = 0
+    y_offset = 0
+    x_control_dest = x_control_source.flatten() + x_offset
+    y_control_dest = y_control_source.flatten() + y_offset
+
+    """
+    Add Points
+        We will have the number of variables, in this case 2 (x and y), hardcoded
+    """
+
+    # Create 2 x n array of x and y source variables
+    source_points = np.vstack((x_control_source.flatten(), y_control_source.flatten()))
+
+    # Create 2 x n array of x and y destination variables
+    dest_points = np.vstack((x_control_dest, y_control_dest))
+
+    # Solve the unoptimized numpy version
+    coefficients = solve(num_control_points, source_points, dest_points)
+
+    # Solve the optimized numpy version
+    coefficients_opt = solve_opt(num_control_points, source_points, dest_points)
+
     # Create test points
     test_points = np.random.normal(0, 2, size=(10, 2))
 
-    # Transform points
+    # Transform unoptimized points
     np_transformed_points = np.empty(test_points.shape)
     for ind, (x, y) in enumerate(test_points):
         np_transformed_points[ind, :] = get_transformed_point(x, y, source_points, coefficients)
+
+    # Transform optimized points
+    np_opt_transformed_points = np.empty(test_points.shape)
+    for ind, (x, y) in enumerate(test_points):
+        np_opt_transformed_points[ind, :] = get_transformed_point_opt(x, y, source_points, coefficients_opt)
 
     """
     Get C code version
@@ -143,6 +223,8 @@ if __name__ == "__main__":
     """
     Check if equal
     """
-    print np.allclose(np_transformed_points, c_transformed_points)
+    print "Unoptimized same as C: {}".format(np.allclose(np_transformed_points, c_transformed_points))
+    print "Unoptimized same as optimized: {}".format(np.allclose(np_transformed_points, np_opt_transformed_points))
+    print "Optimized same as C: {}".format(np.allclose(np_opt_transformed_points, c_transformed_points))
 
 
