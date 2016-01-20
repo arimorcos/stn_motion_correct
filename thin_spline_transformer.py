@@ -1,6 +1,8 @@
 import lasagne
 import theano
 import theano.tensor as T
+from theano.ifelse import ifelse
+import theano.tensor.nlinalg as la
 import numpy as np
 
 
@@ -81,30 +83,215 @@ class ThinSplineTransformerLayer(lasagne.layers.MergeLayer):
         return _transform(control_points, input, self.downsample_factor)
 
 
-def _transform(control_points, input, downsample_factor):
+def _transform(dest_points, input, downsample_factor):
     num_batch, num_channels, height, width = input.shape
-    num_control_points = control_points.shape[0]/2
+    num_control_points = dest_points.shape[0]/2
+    num_control_points_printed = theano.printing.Print('num_control_points')(num_control_points)
 
     # grid of (sqrt(num_control_points), sqrt(num_control_points), 1), similar to eq (1) in ref [1]
-    grid_size = T.cast(T.sqrt(num_control_points), 'int64')
-    orig_grid = _meshgrid(grid_size, grid_size)
-    tps_grid = _generate_tps_grid(control_points)
+    source_points = _generate_tps_source_grid(dest_points)
+    sp_shape_printed = theano.printing.Print('source_points')(source_points.shape)
+    sp_printed = theano.printing.Print('source_points')(source_points)
 
-    ## Perform the thin plate spline transform
-    # Add each point to the transformer
+    # reshape destination points
+    dest_points = T.reshape(dest_points, (2, -1))
+    dp_shape_printed = theano.printing.Print('dest_points shape')(dest_points.shape)
+    dp_printed = theano.printing.Print('dest_points')(dest_points)
 
+    ## Solve the thin plate spline transform
+    # Get number of equations (equal to the number of control points + the bias and x and y translation components)
+    num_equations = num_control_points + 3
+    num_eq_printed = theano.printing.Print('num_eq')(num_equations)
 
+    # Initialize L matrix
+    L = T.zeros((num_equations, num_equations), dtype=theano.config.floatX)
+    L_shape_printed = theano.printing.Print('L shape')(L.shape)
+
+    # Create P matrix from [2]
+    L = T.set_subtensor(L[0, 3:num_equations], 1.)
+    L = T.set_subtensor(L[1:3, 3:num_equations], source_points)
+    L = T.set_subtensor(L[3:num_equations, 0], 1.)
+    L = T.set_subtensor(L[3:num_equations, 1:3], source_points.T)
+
+    # Calculate U distance for each pair of points in L
+    # L, updates = theano.scan(fn=_create_K_matrix,
+    #                          outputs_info=L,
+    #                          sequences=[T.arange(num_control_points)],
+    #                          non_sequences=[T.constant(0), source_points])
+
+    L, updates = theano.scan(fn=_inner_source_U_scan,
+                             outputs_info=L,
+                             sequences=[T.arange(num_control_points)],
+                             non_sequences=[source_points, num_control_points])
+    L = L[-1, :, :]
+    # L_printed = theano.printing.Print('L')(L.shape)
+    # L_printed = theano.printing.Print('L')(L[-1, 3:, 3:])
+
+    # invert the L matrix
+    L_inv = la.matrix_inverse(L)
+
+    # Solve
+    coefficients = _solve_tps(num_equations, dest_points, L_inv)
+    # coef_printed = theano.printing.Print('coef_shape')(coefficients.shape)
+    coef_printed = theano.printing.Print('coef')(coefficients)
+
+    # Transformed grid
+    out_height = T.cast(height / downsample_factor[0], 'int64')
+    out_width = T.cast(width / downsample_factor[1], 'int64')
+    orig_grid = _meshgrid(out_height, out_width)
+    orig_grid = orig_grid[0:2, :]
+
+    # Transform each point on the source grid (image_size x image_size)
+    transformed_points = _get_transformed_points(orig_grid, source_points,
+                                                 coefficients, num_control_points)
+
+    # Get out new points
+    x_transformed = transformed_points[0, :].flatten()
+    y_transformed = transformed_points[1, :].flatten()
 
     # dimshuffle input to  (bs, height, width, channels)
     input_dim = input.dimshuffle(0, 2, 3, 1)
     input_transformed = _interpolate(
-        input_dim, x_s_flat, y_s_flat,
+        input_dim, x_transformed, y_transformed,
         out_height, out_width)
+
+    gp_print = theano.printing.Print('test')(input_dim.shape)
 
     output = T.reshape(
         input_transformed, (num_batch, out_height, out_width, num_channels))
     output = output.dimshuffle(0, 3, 1, 2)  # dimshuffle to conv format
-    return output
+    return input, gp_print
+
+
+def _U_func(x1, y1, x2, y2):
+    """
+    Wrapper for _U_func_int which implements the necessary if-else
+    """
+    return ifelse(T.and_(T.eq(x1, x2), T.eq(y1, y2)),
+                  T.cast(T.constant(0), theano.config.floatX),
+                  _U_func_int(x1, y1, x2, y2))
+
+
+def _U_func_int(x1, y1, x2, y2):
+    """
+    Function which implements the U function from Bookstein paper
+    :param x1: x coordinate of the first point
+    :param y1: y coordinate of the first point
+    :param x2: x coordinate of the second point
+    :param y2: y coordinate of the second point
+    :return: value of z
+    """
+
+    # Calculate the squared Euclidean norm (r^2)
+    r_2 = (x2 - x1) ** 2 + (y2 - y1) ** 2
+
+    # Return the squared norm (r^2 * log r^2)
+    return r_2 * T.log(r_2)
+
+
+def _get_transformed_points(new_points, source_points, coefficients, num_points):
+    """
+    Calculates the transformed point's value using the provided coefficients
+    :param new_points: 2 x num_to_transform tensor
+    :param source_points: 2 x num_points array of source points
+    :param coefficients: coefficients (should be shape (2, control_points + 3))
+    :param num_points: the number of points
+    :return: the x and y coordinates of the transformed point
+    """
+
+    # Calculate the squared distance between the new point and the source points
+    to_transform = new_points.dimshuffle('x', 0, 1)
+    stacked_transform = T.tile(to_transform, (num_points, 1, 1))
+    r_2 = T.sum(((stacked_transform - source_points.dimshuffle(1, 0, 'x')) ** 2), axis=1)
+
+    # Calculate the U function for the new point and each source point
+    log_r_2 = T.log(r_2)
+    distances = T.switch(T.isnan(log_r_2), r_2 * log_r_2, 0.)
+
+    # Add in the coefficients for the affine transform (1, x, and y, corresponding to a_1, a_x, and a_y)
+    upper_array = T.concatenate([T.ones((1, new_points.shape[1]), dtype=theano.config.floatX),
+                                 new_points])
+    right_mat = T.concatenate([upper_array, distances])
+
+    # Calculate the new value as the dot product
+    new_value = T.dot(coefficients, right_mat)
+    return new_value
+
+
+def _get_transformed_point(new_x, new_y, source_points, coefficients, num_points):
+    """
+    Calculates the transformed point's value using the provided coefficients
+    :param new_x: x point to transform
+    :param new_y: y point to transform
+    :param source_points: 2 x num_points array of source points
+    :param coefficients: coefficients (should be shape (2, control_points + 3))
+    :param num_points: the number of points
+    :return: the x and y coordinates of the transformed point
+    """
+
+    # Calculate the squared distance between the new point and the source points
+    to_transform = T.stack([new_x, new_y])
+    stacked_transform = T.tile(to_transform, (num_points, 1))
+    r_2 = T.sum(((stacked_transform.T - source_points) ** 2), axis=0)
+
+    # Calculate the U function for the new point and each source point
+    distances = r_2 * T.log(r_2)
+
+    # Add in the coefficients for the affine transform (1, x, and y, corresponding to a_1, a_x, and a_y)
+    upper_array = T.stack([T.constant(1.), new_x, new_y])
+    right_mat = T.concatenate([upper_array, distances])
+
+    # Calculate the new value as the dot product
+    new_value = T.dot(coefficients, right_mat)
+    return new_value
+
+
+def _solve_tps(num_equations, dest_points, L_inv):
+    coefficients = T.zeros((2, num_equations), dtype=theano.config.floatX)
+    coefficients, updates = theano.scan(fn=_solve_inner_scan,
+                                        outputs_info=coefficients,
+                                        sequences=[T.arange(num_equations)],
+                                        non_sequences=[T.constant(0), dest_points, num_equations, L_inv])
+    coefficients = coefficients[-1, :, :]
+    coefficients, updates = theano.scan(fn=_solve_inner_scan,
+                                        outputs_info=coefficients,
+                                        sequences=[T.arange(num_equations)],
+                                        non_sequences=[T.constant(1), dest_points, num_equations, L_inv])
+    return coefficients[-1, :, :]
+
+
+def _solve_inner_scan(eq_1, coefficients, variable, dest_points, num_equations, L_inv):
+    coefficients, updates = theano.scan(fn=_inner_solve,
+                                        outputs_info=coefficients,
+                                        sequences=[T.arange(3, num_equations)],
+                                        non_sequences=[eq_1, variable, dest_points, L_inv])
+
+    return coefficients[-1, :, :]
+
+
+def _inner_solve(eq_2, coefficients, eq_1, variable, dest_points, L_inv):
+    return T.set_subtensor(coefficients[variable, eq_1],
+                           coefficients[variable, eq_1] +
+                           L_inv[eq_1, eq_2] * dest_points[variable, eq_2 - 3])
+
+
+def _inner_source_U_scan(curr_point, L, source_points, num_control_points):
+    """
+    Performs the inner loop for the nested for loop which calculates the U values
+    """
+    L, updates = theano.scan(fn=_create_K_matrix,
+                             outputs_info=L,
+                             sequences=[T.arange(num_control_points)],
+                             non_sequences=[curr_point, source_points])
+    return L[-1, :, :]
+
+
+def _create_K_matrix(point_1, L, point_2, source_points):
+    temp_val = _U_func(source_points[0, point_1], source_points[1, point_1],
+                       source_points[0, point_2], source_points[1, point_2])
+    L = T.set_subtensor(L[point_1 + 3, point_2 + 3], temp_val)
+    L = T.set_subtensor(L[point_2 + 3, point_1 + 3], temp_val)
+    return L
 
 
 def _interpolate(im, x, y, out_height, out_width):
@@ -195,29 +382,47 @@ def _meshgrid(height, width):
     return grid
 
 
-def _generate_tps_grid(control_points):
+def _generate_tps_source_grid(control_points):
     """
-    Generates grid coordinates from the control points
+    Generates source and destination grid coordinates from the control points
     :param control_points: 2*num_control_points vector containing the x values followed by y values of each control
         point
-    :return: a vertical stack of the grid
+    :return: a vertical stack of the source grid
     """
 
     # reshape to (num_control_points, 2)
     control_points = T.reshape(control_points, newshape=(-1, 2))
 
-    # Extract x_t and y_t
-    x_t = control_points[:, 0]
-    y_t = control_points[:, 1]
+    ## Generate source points
+    # Get number of control_points
+    num_control_points = control_points.shape[0]
 
-    # Flatten
-    x_t_flat = x_t.reshape((1, -1))
-    y_t_flat = y_t.reshape((1, -1))
+    # Get grid size
+    grid_size = T.cast(T.sqrt(num_control_points), 'int64')
 
-    # Generate ones
-    ones = T.ones_like(x_t_flat)
+    # generate mesh grid for source points
+    x_source = T.dot(T.ones((grid_size, 1)),
+                     _linspace(-1.0, 1.0, grid_size).dimshuffle('x', 0))
+    y_source = T.dot(_linspace(-1.0, 1.0, grid_size).dimshuffle(0, 'x'),
+                     T.ones((1, grid_size)))
+
+    # flatten
+    x_source_flat = x_source.reshape((1, -1))
+    y_source_flat = y_source.reshape((1, -1))
 
     # Concatenate
-    grid = T.concatenate([x_t_flat, y_t_flat, ones], axis=0)
+    source_points = T.concatenate([x_source_flat, y_source_flat], axis=0)
 
-    return grid
+    # ## Generate destination points
+    # # Extract x_dest and y_dest
+    # x_dest = control_points[:, 0]
+    # y_dest = control_points[:, 1]
+    #
+    # # Flatten
+    # x_dest_flat = x_dest.reshape((1, -1))
+    # y_dest_flat = y_dest.reshape((1, -1))
+    #
+    # # Concatenate
+    # dest_points = T.concatenate([x_dest_flat, y_dest_flat], axis=0)
+
+    return source_points
