@@ -154,11 +154,8 @@ def solve_opt(num_control_points, source_points, dest_points):
     L_inv = np.linalg.inv(L)
 
     # Calculate the coefficients for each variable (a_1, a_x, a_y)
-    coefficients = np.zeros((2, num_equations))
-    for variable in range(2):
-        for eq_1 in range(num_equations):
-            for eq_2 in range(3, num_equations):
-                coefficients[variable, eq_1] += L_inv[eq_1, eq_2] * dest_points[variable, eq_2 - 3]
+    coefficients = np.dot(dest_points, L_inv[:, 3:].T)
+
     return coefficients
 
 
