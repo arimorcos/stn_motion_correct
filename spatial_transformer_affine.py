@@ -100,10 +100,11 @@ def _transform(theta, input, downsample_factor):
     x_s_flat = x_s.flatten()
     y_s_flat = y_s.flatten()
 
+    test_print = theano.printing.Print('test')(T_g.shape)
+    return input, test_print
+
     # dimshuffle input to  (bs, height, width, channels)
     input_dim = input.dimshuffle(0, 2, 3, 1)
-
-    g_print = theano.printing.Print('test')(theta.shape)
     input_transformed = _interpolate(
         input_dim, x_s_flat, y_s_flat,
         out_height, out_width)
