@@ -11,9 +11,9 @@ def do_train(batch_size=32, cost_gap=200, anneal_thresh=0.0005,
 
     ################ NETWORK ###############
     # Create network
-    network = networks.stn_affine(batch_size=batch_size, save_every=100,
-                           initialization='glorot_normal', max_norm=15,
-                           alpha=0.001)
+    network = networks.stn_tps(batch_size=batch_size, save_every=100,
+                               initialization='glorot_normal', max_norm=15,
+                               alpha=0.001)
 
     # force init
     # network.set_parameters('/media/arimorcos/4TB External/stn_conv_net/160114_125908/Epoch_0000_weights.pkl')
@@ -56,8 +56,11 @@ def do_train(batch_size=32, cost_gap=200, anneal_thresh=0.0005,
             else:
                 last_anneal += 1
 
+        # Advance the schedule
+        im_handler.advance_schedule()
+
 # Set batch size
-batch_size = 64
+batch_size = 16
 
 # Create image handler
 im_handler = image_manager.image_manager(batch_size=batch_size)

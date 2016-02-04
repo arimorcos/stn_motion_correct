@@ -1,16 +1,17 @@
 import lasagne
 import theano
 import theano.tensor as T
-from theano.ifelse import ifelse
-import theano.tensor.nlinalg as la
 import numpy as np
 
 
 class ThinSplineTransformerLayer(lasagne.layers.MergeLayer):
     """
-    Spatial transformer layer
-    The layer applies an thin spline transformation on the input. The thin spline transform is parameterized by
-    The output is interpolated with a bilinear transformation.
+    Thin plate spline spatial transformer layer
+    The layer applies an thin plate spline transformation [2] on the input.
+    The transform is determined based on the movement of some number of control
+    points. The starting positions for these control points are fixed, and the
+    destinations of these points are fed in as the output of the localization
+    network.
     Parameters
     ----------
     incoming : a :class:`Layer` instance or a tuple
@@ -18,14 +19,19 @@ class ThinSplineTransformerLayer(lasagne.layers.MergeLayer):
         output of this layer should be a 4D tensor, with shape
         ``(batch_size, num_input_channels, input_rows, input_columns)``.
     localization_network : a :class:`Layer` instance
-        The network that calculates the parameters of the affine
-        transformation. See the example for how to initialize to the identity
-        transform.
+        The network that calculates the parameters of the thin plate spline
+        transformation as the x and y coordinates of the destinations of each
+        control point. The output of the localization network must be twice the
+        number of control points.
     downsample_factor : float or iterable of float
         A float or a 2-element tuple specifying the downsample factor for the
         output image (in both spatial dimensions). A value of 1 will keep the
         original size of the input. Values larger than 1 will downsample the
         input. Values below 1 will upsample the input.
+    num_control_points : integer
+        The number of control points to be used. These points will be arranged
+        as a grid along the image, so the value must be a perfect square.
+
     References
     ----------
     .. [1]  Spatial Transformer Networks
@@ -37,23 +43,37 @@ class ThinSplineTransformerLayer(lasagne.layers.MergeLayer):
 
     Examples
     --------
-    Here we set up the layer to initially do the identity transform, similarly
-    to [1]_. Note that you will want to use a localization with linear output.
-    If the output from the localization networks is [t1, t2, t3, t4, t5, t6]
-    then t1 and t5 determines zoom, t2 and t4 determines skewness, and t3 and
-    t6 move the center position.
+    Here, we'll simply implement an identity transform. First we'll create the source
+    and destination control points. To make everything invariant to the shape of the
+    image, the x and y range of the image is normalized to [-1, 1] as in ref [1]. To
+    replicate an identity transform, we'll simply set the offsets to 0. More complicated
+    transformations can easily be implemented using different x and y offsets (importantly,
+    each control point can have it's own pair of offsets).
     >>> import numpy as np
     >>> import lasagne
-    >>> b = np.zeros((2, 3), dtype='float32')
-    >>> b[0, 0] = 1
-    >>> b[1, 1] = 1
-    >>> b = b.flatten()  # identity transform
+    >>> num_control_points = 16
+    >>> grid_size = np.sqrt(num_control_points)
+    >>> x_control_source, y_control_source = np.meshgrid(np.linspace(-1, 1, grid_size),
+    >>>                                                  np.linspace(-1, 1, grid_size))
+    >>> # offset for the control points
+    >>> x_offset = 0
+    >>> y_offset = 0
+    >>> x_control_dest = x_control_source.flatten() + x_offset
+    >>> y_control_dest = y_control_source.flatten() + y_offset
+    >>> dest_points = np.vstack((x_control_dest, y_control_dest)).flatten()
+    >>>
+    >>> # We'll set the bias to be the source points
+    >>> b = np.vstack((x_control_source.flatten(), y_control_source.flatten())).flatten()
+    >>>
+    >>> # Create the network
     >>> W = lasagne.init.Constant(0.0)
-    >>> l_in = lasagne.layers.InputLayer((None, 3, 28, 28))
-    >>> l_loc = lasagne.layers.DenseLayer(l_in, num_units=6, W=W, b=b,
-    ... nonlinearity=None)
-    >>> l_trans = lasagne.layers.TransformerLayer(l_in, l_loc)
+    >>> l_in = lasagne.layers.InputLayer((None, 3, 28, 28))  # (batch_size, channels, height, width)
+    >>> l_loc = lasagne.layers.DenseLayer(l_in, num_units=2*num_control_points, W=W, b=b,
+    ...                                   nonlinearity=None)
+    >>> l_trans = lasagne.layers.ThinSplineTransformerLayer(l_in, l_loc,
+...                                                         num_control_points=num_control_points)
     """
+
     def __init__(self, incoming, localization_network, downsample_factor=1,
                  num_control_points=16, **kwargs):
         super(ThinSplineTransformerLayer, self).__init__(
@@ -66,6 +86,7 @@ class ThinSplineTransformerLayer(lasagne.layers.MergeLayer):
         if loc_shp[-1] != 2*num_control_points or len(loc_shp) != 2:
             raise ValueError("The localization network must have "
                              "output shape: (batch_size, 2*num_control_points)")
+
         if round(np.sqrt(num_control_points)) != np.sqrt(num_control_points):
             raise ValueError("The number of control points must be"
                              " a perfect square.")
@@ -87,18 +108,19 @@ class ThinSplineTransformerLayer(lasagne.layers.MergeLayer):
     def get_output_for(self, inputs, **kwargs):
         # see eq. (1) and sec 3.1 in [1]
         input, control_points = inputs
-        return _transform(control_points, input, self.source_points,
-                          self.L_inv, self.downsample_factor)
+        return _transform_thin_thin_plate_spline(control_points, input,
+                                                 self.source_points, self.L_inv,
+                                                 self.downsample_factor)
 
 
-def _transform(dest_points, input, source_points, L_inv, downsample_factor):
+def _transform_thin_thin_plate_spline(dest_points, input, source_points, L_inv, downsample_factor):
     num_batch, num_channels, height, width = input.shape
     num_control_points = source_points.shape[1]
 
-    # reshape destination points
+    # reshape destination points to be (num_batch, 2, num_control_points)
     dest_points = T.reshape(dest_points, (num_batch, 2, num_control_points))
 
-    # Solve
+    # Solve as in ref [2]
     coefficients = T.dot(dest_points, L_inv[:, 3:].T)
 
     # Transformed grid
@@ -109,9 +131,9 @@ def _transform(dest_points, input, source_points, L_inv, downsample_factor):
     orig_grid = T.tile(orig_grid, (num_batch, 1, 1))
 
     # Transform each point on the source grid (image_size x image_size)
-    transformed_points = _get_transformed_points(orig_grid, source_points,
-                                                 coefficients, num_control_points,
-                                                 num_batch)
+    transformed_points = _get_transformed_points_tps(orig_grid, source_points,
+                                                     coefficients, num_control_points,
+                                                     num_batch)
 
     # Get out new points
     x_transformed = transformed_points[:, 0].flatten()
@@ -129,26 +151,29 @@ def _transform(dest_points, input, source_points, L_inv, downsample_factor):
     return output
 
 
-def _get_transformed_points(new_points, source_points, coefficients, num_points, batch_size):
+def _get_transformed_points_tps(new_points, source_points, coefficients, num_points, batch_size):
     """
-    Calculates the transformed point's value using the provided coefficients
+    Calculates the transformed points' value using the provided coefficients
     :param new_points: num_batch x 2 x num_to_transform tensor
     :param source_points: 2 x num_points array of source points
     :param coefficients: coefficients (should be shape (num_batch, 2, control_points + 3))
     :param num_points: the number of points
-    :return: the x and y coordinates of the transformed point
+    :return: the x and y coordinates of each transformed point. Shape (num_batch, 2, num_to_transform)
     """
+
+    # Calculate the U function for the new point and each source point as in ref [2]
+    # The U function is simply U(r) = r^2 * log(r^2), where r^2 is the squared distance
 
     # Calculate the squared distance between the new point and the source points
     to_transform = new_points.dimshuffle(0, 'x', 1, 2)  # (batch_size, 1, 2, num_to_transform)
     stacked_transform = T.tile(to_transform, (1, num_points, 1, 1))  # (batch_size, num_points, 2, num_to_transform)
     r_2 = T.sum(((stacked_transform - source_points.dimshuffle('x', 1, 0, 'x')) ** 2), axis=2)
 
-    # Calculate the U function for the new point and each source point
+    # Take the product (r^2 * log(r^2)), being careful to avoid NaNs
     log_r_2 = T.log(r_2)
     distances = T.switch(T.isnan(log_r_2), r_2 * log_r_2, 0.)
 
-    # Add in the coefficients for the affine transform (1, x, and y, corresponding to a_1, a_x, and a_y)
+    # Add in the coefficients for the affine translation (1, x, and y, corresponding to a_1, a_x, and a_y)
     upper_array = T.concatenate([T.ones((batch_size, 1, new_points.shape[2]), dtype=theano.config.floatX),
                                  new_points], axis=1)
     right_mat = T.concatenate([upper_array, distances], axis=1)
@@ -270,7 +295,7 @@ def _U_func_numpy(x1, y1, x2, y2):
 def _initialize_tps(num_control_points):
     """
     Initializes the thin plate spline calculation by creating the source point array and
-    the inverted L matrix used for calculating the transformations
+    the inverted L matrix used for calculating the transformations as in ref [2]
     :param num_control_points: the number of control points. Must be a perfect square.
         Points will be used to generate an evenly spaced grid.
     :return:

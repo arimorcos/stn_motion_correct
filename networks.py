@@ -502,139 +502,63 @@ class stn_affine(generic_stn):
 
 class stn_tps(generic_stn):
     """
-    Spatial transformer network using thin-plate-splines.
-
-    NOTE: This uses the thinplatespline python package, which can be found here (
-    https://github.com/olt/thinplatespline). As a result, the thin plate spline transform is not implemented in
-    theano, and, therefore, is not differentiable.
+    Class to instantiate a spatial transformer network with a thin plate
+    spline transform
     """
 
-    def __init__(self, batch_size=32, alpha=0.0005, max_norm=5., log_dir=None, save_every=10,
-                 dropout_frac=0.5, initialization='glorot_uniform', num_control_points=16):
-        """
-        :param batch_size: batch_size for the network (pre-specifying allows for theano optimizations)
-        :param alpha: initial learning rate
-        :param max_norm: maximum norm on the gradient
-        :param log_dir: where should the log directory be
-        :param save_every: how often to save parameters
-        :param dropout_frac: Fraction for dropout
-        :param initialization: Which initialization regime to use. Default is 'glorot_uniform'. Options are {
-            'glorot_uniform', 'glorot_normal', 'orthogonal', 'he_normal', 'he_uniform'}
-        :param num_control_points: integer specifying the number of thin plate spline control points. Must be a
-            perfect square.
-        """
-
-        # Initialize parameters
-        self.batch_size = batch_size
-        self.alpha = alpha
-        self.max_norm = max_norm
-        self.log_dir = log_dir
-        self.initialization = initialization
-        self.dropout_frac = dropout_frac
-        self.num_control_points = num_control_points
-        self.curr_epoch = 0
-        self.save_every = save_every
-
-        # Check num_control_points
-        if np.sqrt(num_control_points) != round(np.sqrt(num_control_points)):
-            raise ValueError("Number of control points must be a perfect square.")
-
-        # Create the graph
-        # self.create_network_graph(batch_size=self.batch_size)
-        self.create_simple_network_graph(batch_size=self.batch_size)
-
-        # Create relevant inputs
-        self.create_inputs()
-
-        # Initialize the process and cost functions
-        self.initialize_get_tps_params()
-        self.initialize_cost()
-
-        # Initialize adam
-        self.initialize_adam()
-
     def initialize_cost(self):
-        self.cost = self.get_cost(self.input_batch, self.ref_imgs)
-
-    def get_cost(self, input_batch, ref_imgs):
         """
-        Cost function
+        Initializes the cost function
         """
 
-        # Get cropped down image
-        to_process = input_batch[:, 0, :, :].copy()
-
-        # Get tps parameters
-        tps_params = self.get_tps_params(input_batch)
-
-        # apply transform
-        for batch in range(self.batch_size):
-            to_process[batch, :, :] = apply_tps_transform(to_process[batch, :, :], tps_params[batch, :, :])
+        # get the transformed images
+        predictions = lasagne.layers.get_output(self.transformer_graph, self.input_batch)
 
         # add in the cost (mse)
-        cost = np.mean((to_process - ref_imgs)**2)
+        self.cost = lasagne.objectives.squared_error(predictions, self.ref_imgs).mean()
 
-        # return
-        return cost
+        #### add in the cost (pixel weighted mse)
+        # squared_error = lasagne.objectives.squared_error(predictions, self.ref_imgs)  # get squared error
+        #
+        # # Manipulate each ref image to be sum to 1
+        # ref_shape = self.ref_imgs.shape  # Get shape for convenience
+        # ref_img_reshape = T.reshape(self.ref_imgs, newshape=(ref_shape[0], ref_shape[1]*ref_shape[2]),
+        #                             ndim=2)  # reshape to batch_size x num_pixels
+        # # self.get_shape_1 = theano.function([self.ref_imgs], ref_img_reshape.shape)
+        # ref_img_max = ref_img_reshape.max(axis=1).dimshuffle((0, 'x'))  # Get max for each image and create
+        #                                                                 # broadcastable dimension
+        # ref_img_min = ref_img_reshape.min(axis=1).dimshuffle((0, 'x'))  # get min for each image
+        # # self.get_max_min_shape = theano.function([self.ref_imgs], [ref_img_max.shape, ref_img_min.shape])
+        # ref_img_norm = (ref_img_reshape - ref_img_min) / (ref_img_max - ref_img_min)  # norm each image between 0 and 1
+        # # self.get_norm_shape = theano.function([self.ref_imgs], ref_img_norm.shape)
+        #
+        # # self.get_ref_norm = theano.function([self.ref_imgs], ref_img_norm)
+        # #
+        # # self.get_norm_max_min = theano.function([self.ref_imgs], [ref_img_norm.max(axis=1), ref_img_norm.min(axis=1)])
+        #
+        # ref_img_partition = ref_img_norm / T.sum(ref_img_norm, axis=1).dimshuffle((0, 'x'))  # Partition so it sums to 1
+        # # self.get_shape_2 = theano.function([self.ref_imgs], ref_img_partition.shape)
+        # # norm_sum = T.sum(ref_img_norm, axis=1)
+        # # part_sum = T.sum(ref_img_partition, axis=1)
+        # # self.new_sum = theano.function([self.ref_imgs], [norm_sum, part_sum])
+        # ref_img_partition = T.reshape(ref_img_partition, self.ref_imgs.shape)  # return to original shape
+        #
+        # # Aggregate using the normalized ref image as the weights
+        # self.cost = 100000*(squared_error * ref_img_partition).mean()
 
-    def initialize_adam(self):
+        # create function
+        self.get_cost = theano.function([self.input_batch, self.ref_imgs], self.cost)
+
+    def initialize_process(self):
         """
-        Initializes the adam training function
-        """
-
-        # Get the parameters to train
-        self.params_to_train = lasagne.layers.get_all_params(self.transformer_graph,
-                                                             trainable=True)
-
-        # Get gradients
-        self.all_gradients = T.grad(self.cost, self.params_to_train)
-
-        # Add gradient normalization
-        updates = lasagne.updates.total_norm_constraint(self.all_gradients,
-                                                              max_norm=self.max_norm)
-
-        # Create learning rate
-        self.shared_lr = theano.shared(lasagne.utils.floatX(self.alpha))
-
-        # Create adam function
-        updates = lasagne.updates.adam(updates,
-                                       self.params_to_train,
-                                       learning_rate=self.shared_lr)
-
-        # Create train function
-        self.train_adam_helper = theano.function([self.input_batch, self.ref_imgs],
-                                          self.cost,
-                                          updates=updates)
-
-    def initialize_get_tps_params(self):
-        """
-        Initializes the function to get the new tps paramaters
+        Initializes the process function
         """
 
         # Create symbolic output
-        tps_params = lasagne.layers.get_output(self.transformer_graph, self.input_batch, deterministic=True)
+        output = lasagne.layers.get_output(self.transformer_graph, self.input_batch, deterministic=True)
 
         # Create theano function
-        self.get_tps_params = theano.function([self.input_batch], tps_params)
-
-    def process(self, input_batch):
-        """
-        Initializes the proces function
-        :param input_batch: (batch_size, channels, height, width) input batch image
-        :return: (batch_size, height, width) transformed image
-        """
-
-        # Get cropped down image
-        to_process = input_batch[:, 0, :, :].copy()
-
-        # Get tps parameters
-        tps_params = self.get_tps_params(input_batch)
-
-        # apply transform
-        for batch in range(self.batch_size):
-            to_process[batch, :, :] = apply_tps_transform(to_process[batch, :, :], tps_params[batch, :, :])
-
-        return to_process
+        self.process = theano.function([self.input_batch], output)
 
     def create_simple_network_graph(self, batch_size=32):
         """
@@ -642,6 +566,8 @@ class stn_tps(generic_stn):
         :param batch_size: batch_size for optimization
         :return:
         """
+
+        num_control_points = 16
 
         # Set initialization scheme
         if self.initialization == 'glorot_uniform':
@@ -691,20 +617,22 @@ class stn_tps(generic_stn):
                                                   name='dense_2', nonlinearity=lasagne.nonlinearities.rectify)
         dense_layer_2_dropout = lasagne.layers.DropoutLayer(dense_layer_2, p=self.dropout_frac, name='dense_2_dropout')
 
-        # Initialize tps transform to grid of control points
-        grid_size = np.sqrt(self.num_control_points)
-        x_params, y_params = np.meshgrid(np.linspace(-1, 1, grid_size),
-                                         np.linspace(-1, 1, grid_size))
-        tps_params = np.vstack((x_params.flatten(), y_params.flatten())).T.flatten().astype(theano.config.floatX)
+        # Slice out the first channel
+        slice_layer = lasagne.layers.SliceLayer(input_layer, indices=0, axis=1)
+        reshape_layer = lasagne.layers.ReshapeLayer(slice_layer, ([0], 1, [1], [2]))
 
         # Final tps layer
-        tps_layer = lasagne.layers.DenseLayer(dense_layer_2_dropout, num_units=2*self.num_control_points,
-                                              W=lasagne.init.Constant(0.0), b=tps_params,
+        tps_layer = lasagne.layers.DenseLayer(dense_layer_2_dropout, num_units=2*num_control_points,
+                                              W=lasagne.init.Constant(0.0),
+                                              b=lasagne.init.Constant(0.0),
                                               nonlinearity=lasagne.nonlinearities.identity,
                                               name='tps')
 
-        # Reshape
-        tps_reshape = lasagne.layers.ReshapeLayer(tps_layer, (self.batch_size, self.num_control_points, 2))
+        # Finally, create the transformer network
+        transformer = lasagne.layers.TPSTransformerLayer(incoming=reshape_layer,
+                                                         localization_network=tps_layer,
+                                                         downsample_factor=1,
+                                                         control_points=num_control_points)
 
         # Return
-        self.transformer_graph = tps_reshape
+        self.transformer_graph = transformer
