@@ -1,12 +1,11 @@
 import lasagne
 from thin_spline_transformer import ThinSplineTransformerLayer
-from spatial_transformer_affine import TransformerLayer
 from theano.tensor import constant
 import theano
 from theano import config
 import numpy as np
 import matplotlib.pyplot as plt
-from scipy.misc import lena
+from scipy.misc import face
 import time
 
 
@@ -29,7 +28,7 @@ if __name__ == "__main__":
     # inputs = np.tile(np.outer(np.arange(l_in.shape[2]), np.arange(l_in.shape[3])),
     #                  (l_in.shape[0], l_in.shape[1], 1, 1))
     # inputs = np.tile(lena()[::18, ::18], (l_in.shape[0], l_in.shape[1], 1, 1))
-    inputs = np.tile(lena(), (l_in.shape[0], l_in.shape[1], 1, 1))
+    inputs = np.tile(face(), (l_in.shape[0], l_in.shape[1], 1, 1))
 
     # Create control points
     grid_size = np.sqrt(num_control_points)

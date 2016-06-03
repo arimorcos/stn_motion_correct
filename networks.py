@@ -1,6 +1,7 @@
 import numpy as np
 import theano
 import lasagne
+from lasagne.layers import batch_norm
 import theano.tensor as T
 import re
 import os
@@ -8,8 +9,6 @@ import cPickle
 import sys
 import warnings
 import logging
-from batch_norm import batch_norm
-from tps_helper import apply_tps_transform
 from abc import ABCMeta, abstractmethod
 
 
@@ -70,7 +69,7 @@ class generic_stn:
 
         # Add gradient normalization
         updates = lasagne.updates.total_norm_constraint(self.all_gradients,
-                                                              max_norm=self.max_norm)
+                                                        max_norm=self.max_norm)
 
         # Create learning rate
         self.shared_lr = theano.shared(lasagne.utils.floatX(self.alpha))
@@ -82,8 +81,9 @@ class generic_stn:
 
         # Create train function
         self.train_adam_helper = theano.function([self.input_batch, self.ref_imgs],
-                                          self.cost,
-                                          updates=updates)
+                                                 [self.cost,
+                                                  self.all_gradients[10]],
+                                                 updates=updates)
 
     def train_adam(self, input_batch, ref_imgs):
 
@@ -92,7 +92,7 @@ class generic_stn:
             self.save_parameters()
 
         # Train network
-        cost = self.train_adam_helper(input_batch, ref_imgs)
+        cost, gradients = self.train_adam_helper(input_batch, ref_imgs)
 
         # Add to log
         self.logger.info(
@@ -264,7 +264,7 @@ class generic_stn:
             load_file = os.path.join(self.log_dir, 'Epoch_{:04d}_weights.pkl'.format(epoch))
             if not os.path.isfile(load_file):
                 raise IOError('File corresponding to epoch {}: \"Epoch_{:04d}_weights.pkl\" not found.'.format(epoch,
-                                                                                                           epoch))
+                                                                                                               epoch))
         else:
             raise ValueError('Must provide param_file or epoch. No parameters have been set.')
 
@@ -339,7 +339,7 @@ class generic_stn:
 
         # create file handler which logs even debug messages
         file_handler = logging.FileHandler(
-                os.path.join(self.log_dir, "results.log"), mode='wb'
+            os.path.join(self.log_dir, "results.log"), mode='wb'
         )
         file_handler.setLevel(logging.DEBUG)
 
@@ -392,14 +392,17 @@ class stn_affine(generic_stn):
         #                                                                 # broadcastable dimension
         # ref_img_min = ref_img_reshape.min(axis=1).dimshuffle((0, 'x'))  # get min for each image
         # # self.get_max_min_shape = theano.function([self.ref_imgs], [ref_img_max.shape, ref_img_min.shape])
-        # ref_img_norm = (ref_img_reshape - ref_img_min) / (ref_img_max - ref_img_min)  # norm each image between 0 and 1
+        # ref_img_norm = (ref_img_reshape - ref_img_min) / (ref_img_max - ref_img_min)  # norm each image between 0
+        # and 1
         # # self.get_norm_shape = theano.function([self.ref_imgs], ref_img_norm.shape)
         #
         # # self.get_ref_norm = theano.function([self.ref_imgs], ref_img_norm)
         # #
-        # # self.get_norm_max_min = theano.function([self.ref_imgs], [ref_img_norm.max(axis=1), ref_img_norm.min(axis=1)])
+        # # self.get_norm_max_min = theano.function([self.ref_imgs], [ref_img_norm.max(axis=1), ref_img_norm.min(
+        # axis=1)])
         #
-        # ref_img_partition = ref_img_norm / T.sum(ref_img_norm, axis=1).dimshuffle((0, 'x'))  # Partition so it sums to 1
+        # ref_img_partition = ref_img_norm / T.sum(ref_img_norm, axis=1).dimshuffle((0, 'x'))  # Partition so it sums
+        #  to 1
         # # self.get_shape_2 = theano.function([self.ref_imgs], ref_img_partition.shape)
         # # norm_sum = T.sum(ref_img_norm, axis=1)
         # # part_sum = T.sum(ref_img_partition, axis=1)
@@ -517,35 +520,6 @@ class stn_tps(generic_stn):
         # add in the cost (mse)
         self.cost = lasagne.objectives.squared_error(predictions, self.ref_imgs).mean()
 
-        #### add in the cost (pixel weighted mse)
-        # squared_error = lasagne.objectives.squared_error(predictions, self.ref_imgs)  # get squared error
-        #
-        # # Manipulate each ref image to be sum to 1
-        # ref_shape = self.ref_imgs.shape  # Get shape for convenience
-        # ref_img_reshape = T.reshape(self.ref_imgs, newshape=(ref_shape[0], ref_shape[1]*ref_shape[2]),
-        #                             ndim=2)  # reshape to batch_size x num_pixels
-        # # self.get_shape_1 = theano.function([self.ref_imgs], ref_img_reshape.shape)
-        # ref_img_max = ref_img_reshape.max(axis=1).dimshuffle((0, 'x'))  # Get max for each image and create
-        #                                                                 # broadcastable dimension
-        # ref_img_min = ref_img_reshape.min(axis=1).dimshuffle((0, 'x'))  # get min for each image
-        # # self.get_max_min_shape = theano.function([self.ref_imgs], [ref_img_max.shape, ref_img_min.shape])
-        # ref_img_norm = (ref_img_reshape - ref_img_min) / (ref_img_max - ref_img_min)  # norm each image between 0 and 1
-        # # self.get_norm_shape = theano.function([self.ref_imgs], ref_img_norm.shape)
-        #
-        # # self.get_ref_norm = theano.function([self.ref_imgs], ref_img_norm)
-        # #
-        # # self.get_norm_max_min = theano.function([self.ref_imgs], [ref_img_norm.max(axis=1), ref_img_norm.min(axis=1)])
-        #
-        # ref_img_partition = ref_img_norm / T.sum(ref_img_norm, axis=1).dimshuffle((0, 'x'))  # Partition so it sums to 1
-        # # self.get_shape_2 = theano.function([self.ref_imgs], ref_img_partition.shape)
-        # # norm_sum = T.sum(ref_img_norm, axis=1)
-        # # part_sum = T.sum(ref_img_partition, axis=1)
-        # # self.new_sum = theano.function([self.ref_imgs], [norm_sum, part_sum])
-        # ref_img_partition = T.reshape(ref_img_partition, self.ref_imgs.shape)  # return to original shape
-        #
-        # # Aggregate using the normalized ref image as the weights
-        # self.cost = 100000*(squared_error * ref_img_partition).mean()
-
         # create function
         self.get_cost = theano.function([self.input_batch, self.ref_imgs], self.cost)
 
@@ -589,32 +563,34 @@ class stn_tps(generic_stn):
 
         # Input layer with size (batch_size, num_channels, height, width).
         # In our case, each channel will represent the image to change and the reference image.
-        input_layer = lasagne.layers.InputLayer((batch_size, 2, 512, 512))
+        input_layer = batch_norm(lasagne.layers.InputLayer((batch_size, 2, 512, 512)))
 
         # convolutions
-        conv_layer_1 = lasagne.layers.Conv2DLayer(input_layer, num_filters=16, filter_size=(3, 3),
-                                                  stride=1, pad='full', name='conv_1', W=W_ini)
-        conv_layer_2 = lasagne.layers.Conv2DLayer(conv_layer_1, num_filters=16, filter_size=(3, 3),
-                                                  stride=1, pad='full', name='conv_2', W=W_ini)
+        conv_layer_1 = batch_norm(lasagne.layers.Conv2DLayer(input_layer, num_filters=16, filter_size=(3, 3),
+                                                             stride=1, pad='full', name='conv_1', W=W_ini))
+        conv_layer_2 = batch_norm(lasagne.layers.Conv2DLayer(conv_layer_1, num_filters=16, filter_size=(3, 3),
+                                                             stride=1, pad='full', name='conv_2', W=W_ini))
 
         # pool
         pool_layer_1 = lasagne.layers.MaxPool2DLayer(conv_layer_2, pool_size=(2, 2), name='pool_1')
 
         # convolutions
-        conv_layer_3 = lasagne.layers.Conv2DLayer(pool_layer_1, num_filters=32, filter_size=(3, 3),
-                                                  stride=1, pad='full', name='conv_3', W=W_ini)
-        conv_layer_4 = lasagne.layers.Conv2DLayer(conv_layer_3, num_filters=32, filter_size=(3, 3),
-                                                  stride=1, pad='full', name='conv_4', W=W_ini)
+        conv_layer_3 = batch_norm(lasagne.layers.Conv2DLayer(pool_layer_1, num_filters=32, filter_size=(3, 3),
+                                                             stride=1, pad='full', name='conv_3', W=W_ini))
+        conv_layer_4 = batch_norm(lasagne.layers.Conv2DLayer(conv_layer_3, num_filters=32, filter_size=(3, 3),
+                                                             stride=1, pad='full', name='conv_4', W=W_ini))
 
         # pool
         pool_layer_2 = lasagne.layers.MaxPool2DLayer(conv_layer_4, pool_size=(2, 2), name='pool_2')
 
         # Dense layers
-        dense_layer_1 = lasagne.layers.DenseLayer(pool_layer_2, num_units=128, W=W_ini,
-                                                  name='dense_1', nonlinearity=lasagne.nonlinearities.rectify)
+        dense_layer_1 = batch_norm(lasagne.layers.DenseLayer(pool_layer_2, num_units=128, W=W_ini,
+                                                             name='dense_1',
+                                                             nonlinearity=lasagne.nonlinearities.rectify))
         dense_layer_1_dropout = lasagne.layers.DropoutLayer(dense_layer_1, p=self.dropout_frac, name='dense_1_dropout')
-        dense_layer_2 = lasagne.layers.DenseLayer(dense_layer_1_dropout, num_units=128, W=W_ini,
-                                                  name='dense_2', nonlinearity=lasagne.nonlinearities.rectify)
+        dense_layer_2 = batch_norm(lasagne.layers.DenseLayer(dense_layer_1_dropout, num_units=128, W=W_ini,
+                                                             name='dense_2',
+                                                             nonlinearity=lasagne.nonlinearities.rectify))
         dense_layer_2_dropout = lasagne.layers.DropoutLayer(dense_layer_2, p=self.dropout_frac, name='dense_2_dropout')
 
         # Slice out the first channel
@@ -622,7 +598,7 @@ class stn_tps(generic_stn):
         reshape_layer = lasagne.layers.ReshapeLayer(slice_layer, ([0], 1, [1], [2]))
 
         # Final tps layer
-        tps_layer = lasagne.layers.DenseLayer(dense_layer_2_dropout, num_units=2*num_control_points,
+        tps_layer = lasagne.layers.DenseLayer(dense_layer_2_dropout, num_units=2 * num_control_points,
                                               W=lasagne.init.Constant(0.0),
                                               b=lasagne.init.Constant(0.0),
                                               nonlinearity=lasagne.nonlinearities.identity,
